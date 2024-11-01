@@ -2,7 +2,7 @@
 
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
+import openai
 from typing import Optional, Dict, List
 import numpy as np
 from difflib import get_close_matches
