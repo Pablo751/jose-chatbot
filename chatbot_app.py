@@ -209,67 +209,128 @@ class ProductAssistant:
             return []
     
     def process_query_with_context(self, 
+    def process_query_with_context(self, 
                                  query: str, 
                                  previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
-        """Procesa la consulta considerando el contexto anterior."""
+        """Procesa la consulta considerando el contexto y presupuesto."""
         try:
             if not query.strip():
                 return [], "Por favor, hazme una pregunta sobre los productos."
             
-            # Detectar si es una pregunta sobre precio
-            price_related = re.search(r'más barato|más económico|menor precio|barato|económico', query.lower()) is not None
+            # Extraer rango de precios de la consulta
+            price_range = self._extract_price_range(query)
+            min_price, max_price = price_range if price_range else (None, None)
             
-            if price_related and previous_results and len(previous_results) > 0:
-                prev_product = previous_results[0].get('product')
-                if not prev_product:
-                    return [], "No encontré el producto anterior. ¿Podrías repetir tu pregunta inicial?"
-                
-                try:
-                    prev_price = float(prev_product['price'])
-                except (ValueError, TypeError):
-                    return [], "Hubo un problema con el precio del producto anterior. ¿Podrías hacer tu pregunta de nuevo?"
-                
-                # Extraer categoría del producto anterior
-                prev_category = None
-                if 'categories' in prev_product:
-                    categories = str(prev_product['categories']).split(',')
-                    if categories:
-                        # Tomar la categoría más específica (última)
-                        prev_category = categories[-1].strip()
-                
-                logger.info(f"Buscando productos más baratos que {prev_product['name']} (${prev_price:,.2f}) en categoría '{prev_category}'")
-                
-                # Buscar productos más baratos
-                results = self.search_products(
-                    query=previous_results[0].get('query', ''),  # Usar la consulta original
-                    category=prev_category,
-                    max_price=prev_price * 0.95,  # 5% más barato
-                    top_k=5
-                )
-                
-                if results:
-                    response = self._generate_comparative_response(
-                        query=query,
-                        prev_product=prev_product,
-                        new_product=results[0]['product']
-                    )
-                    return results, response
-                else:
-                    return [], f"No encontré productos más económicos que el {prev_product['name']} (${prev_price:,.2f}). ¿Te gustaría ver alternativas en otra categoría?"
+            # Detectar si es una consulta relacionada con precio
+            price_related = any(word in query.lower() for word in 
+                              ['precio', 'cuesta', 'barato', 'económico', 'presupuesto', 'costo'])
             
-            # Búsqueda normal
-            logger.info(f"Realizando búsqueda normal para la consulta: '{query}'")
-            results = self.search_products(query)
+            # Buscar productos considerando el rango de precios
+            results = self.search_products(
+                query=query,
+                max_price=max_price,
+                top_k=5
+            )
+            
             if not results:
-                logger.info("No se encontraron productos que coincidan con la búsqueda.")
-                return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles sobre lo que buscas?"
+                return [], self._generate_no_results_response(min_price, max_price)
             
-            response = self._generate_response(query, results[0]['product'])
-            return results, response
+            # Filtrar productos por precio y ordenar por relevancia
+            filtered_results = self._filter_and_sort_results(results, min_price, max_price)
             
+            if not filtered_results:
+                return [], self._generate_out_of_budget_response(results, min_price, max_price)
+            
+            response = self._generate_budget_aware_response(filtered_results, query, min_price, max_price)
+            return filtered_results, response
+                
         except Exception as e:
             logger.error(f"Error procesando consulta: {e}")
             return [], "Lo siento, ocurrió un error. ¿Podrías reformular tu pregunta?"
+    
+    def _extract_price_range(self, query: str) -> Optional[Tuple[float, float]]:
+        """Extrae rango de precios de la consulta."""
+        try:
+            # Patrones comunes de rangos de precio
+            patterns = [
+                r'(?:entre|de)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:a|y|hasta)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
+                r'(?:menos de|bajo|máximo)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
+                r'(?:presupuesto de)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)'
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, query.lower())
+                if match:
+                    if len(match.groups()) == 2:
+                        min_price = float(match.group(1).replace(',', ''))
+                        max_price = float(match.group(2).replace(',', ''))
+                        return min_price, max_price
+                    else:
+                        max_price = float(match.group(1).replace(',', ''))
+                        return 0, max_price
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error extrayendo rango de precios: {e}")
+            return None
+    
+    def _filter_and_sort_results(self, 
+                               results: List[Dict], 
+                               min_price: Optional[float], 
+                               max_price: Optional[float]) -> List[Dict]:
+        """Filtra y ordena resultados por precio y relevancia."""
+        try:
+            filtered_results = []
+            for result in results:
+                price = float(result['product']['price'])
+                if price <= 0:  # Ignorar productos sin precio
+                    continue
+                if min_price is not None and price < min_price:
+                    continue
+                if max_price is not None and price > max_price:
+                    continue
+                filtered_results.append(result)
+            
+            # Ordenar por precio y luego por score
+            return sorted(filtered_results, 
+                         key=lambda x: (float(x['product']['price']), -x['score']))
+        except Exception as e:
+            logger.error(f"Error filtrando resultados: {e}")
+            return []
+    
+    def _generate_budget_aware_response(self, 
+                                      results: List[Dict], 
+                                      query: str,
+                                      min_price: Optional[float], 
+                                      max_price: Optional[float]) -> str:
+        """Genera una respuesta considerando el presupuesto del usuario."""
+        try:
+            best_match = results[0]['product']
+            price = float(best_match['price'])
+            
+            response = f"¡He encontrado algunas opciones dentro de tu presupuesto! "
+            response += f"Te recomiendo el {best_match['name']} a ${price:,.2f}, "
+            
+            if best_match.get('attributes'):
+                attrs = best_match['attributes']
+                features = []
+                if attrs.get('corriente_bticino'): 
+                    features.append(f"corriente de {attrs['corriente_bticino']}")
+                if attrs.get('material_bticino'):
+                    features.append(f"material {attrs['material_bticino']}")
+                if features:
+                    response += f"que cuenta con {' y '.join(features)}. "
+            
+            if len(results) > 1:
+                response += f"\n\nTambién tengo otras {len(results)-1} opciones similares "
+                if min_price is not None and max_price is not None:
+                    response += f"entre ${min_price:,.2f} y ${max_price:,.2f}. "
+                response += "¿Te gustaría conocer más detalles sobre alguna de ellas?"
+            
+            return response
+        except Exception as e:
+            logger.error(f"Error generando respuesta: {e}")
+            return "He encontrado algunos productos que podrían interesarte. ¿Te gustaría más detalles?"
     
     
     def _generate_response(self, query: str, product: Dict) -> str:
