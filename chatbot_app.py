@@ -8,10 +8,15 @@ from typing import Dict, List
 import numpy as np
 import re
 import logging
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import threading
+import time
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
 import openai
+import os
 
 # -------------------------------
 # Configurar el Logging
@@ -60,7 +65,7 @@ def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
             stop=None,
         )
         return response.choices[0].message.content.strip()
-    except Exception as e:
+    except openai.error.OpenAIError as e:
         logger.error(f"Error al llamar a GPT-4o: {e}")
         return "Lo siento, ocurrió un error al generar la respuesta. Por favor, inténtalo de nuevo más tarde."
 
@@ -126,7 +131,7 @@ except Exception as e:
 # -------------------------------
 
 @st.cache_resource(show_spinner=False)
-def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2', nlist: int = 10) -> (np.ndarray, faiss.Index):
+def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2', nlist: int = 50) -> (np.ndarray, faiss.Index):
     """
     Genera embeddings para los productos y configura el índice FAISS IVFFlat para mayor escalabilidad.
     """
@@ -143,8 +148,9 @@ def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniL
     quantizer = faiss.IndexFlatIP(dimension)  # Cuantizador para el índice IVFFlat
     index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
     
-    # Entrenar el índice con todos los embeddings (dado que el conjunto es pequeño)
+    # Entrenar el índice con un subconjunto de embeddings
     if not index.is_trained:
+        logger.info("Entrenando el índice FAISS...")
         index.train(embeddings)
     
     index.add(embeddings)
@@ -160,7 +166,33 @@ except Exception as e:
     st.stop()
 
 # -------------------------------
-# 5. Funciones de Búsqueda y Coincidencia
+# 5. Implementación del Monitoreo de Cambios en el CSV
+# -------------------------------
+
+class CSVChangeHandler(FileSystemEventHandler):
+    def __init__(self, file_path):
+        self.file_path = file_path
+    
+    def on_modified(self, event):
+        if event.src_path.endswith(self.file_path):
+            logger.info(f"Archivo {self.file_path} modificado.")
+            st.session_state['file_changed'] = True
+
+def start_file_watcher(file_path: str):
+    event_handler = CSVChangeHandler(file_path)
+    observer = Observer()
+    observer.schedule(event_handler, path='.', recursive=False)
+    observer.start()
+    logger.info("Watcher iniciado.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+# -------------------------------
+# 6. Funciones de Búsqueda y Coincidencia
 # -------------------------------
 
 def extract_search_terms(user_query: str) -> List[str]:
@@ -267,7 +299,41 @@ def generate_product_response(product_info: Dict[str, str]) -> str:
     return response
 
 # -------------------------------
-# 6. Interfaz Principal con Soporte de Follow-Up
+# 7. Implementación de Feedback del Usuario
+# -------------------------------
+
+def add_feedback(product_name: str, feedback: str):
+    """
+    Almacena el feedback del usuario para un producto específico.
+    """
+    feedback_file = 'data/feedback.csv'
+    new_feedback = {'product_name': product_name, 'feedback': feedback}
+    try:
+        if os.path.exists(feedback_file):
+            df_feedback = pd.read_csv(feedback_file)
+            df_feedback = df_feedback.append(new_feedback, ignore_index=True)
+        else:
+            df_feedback = pd.DataFrame([new_feedback])
+    except Exception as e:
+        logger.error(f"Error al agregar feedback: {e}")
+        st.error("Ocurrió un error al guardar tu feedback. Por favor, inténtalo de nuevo más tarde.")
+        return
+    df_feedback.to_csv(feedback_file, index=False)
+    logger.info(f"Feedback agregado para producto: {product_name}")
+    st.success("¡Gracias por tu feedback!")
+
+# -------------------------------
+# 8. Función para Iniciar el Watcher en un Hilo Separado
+# -------------------------------
+
+# Iniciar el watcher en un hilo separado para no bloquear la interfaz
+if 'watcher_started' not in st.session_state:
+    watcher_thread = threading.Thread(target=start_file_watcher, args=(product_file,), daemon=True)
+    watcher_thread.start()
+    st.session_state['watcher_started'] = True
+
+# -------------------------------
+# 9. Interfaz Principal con Soporte de Follow-Up
 # -------------------------------
 
 # Inicializar historial de conversación y contexto del producto
@@ -275,6 +341,21 @@ if 'conversation' not in st.session_state:
     st.session_state['conversation'] = []
 if 'current_product' not in st.session_state:
     st.session_state['current_product'] = None  # Producto actual para preguntas de seguimiento
+
+# Verificar si el archivo ha cambiado y recargar los datos
+if 'file_changed' in st.session_state and st.session_state['file_changed']:
+    try:
+        product_data = load_product_data(product_file)
+        if not validate_csv(product_data):
+            st.stop()
+        faiss_index = generate_embeddings_faiss_ivf(product_data)[1]
+        st.sidebar.success("✅ Catálogo de productos recargado correctamente")
+        logger.info(f"Productos recargados: {len(product_data)}")
+        st.session_state['file_changed'] = False
+    except Exception as e:
+        st.error(f"Error al recargar el catálogo de productos: {e}")
+        logger.error(f"Error al recargar el catálogo de productos: {e}")
+        st.stop()
 
 # Entrada del usuario
 st.write("👋 ¡Hola! Soy tu asistente de productos. ¿En qué puedo ayudarte?")
@@ -322,7 +403,7 @@ if st.button("Enviar Pregunta"):
                 # Mostrar la respuesta utilizando Markdown para un mejor formato
                 st.markdown(response)
                 
-                # Mostrar productos alternativos
+                # Mostrar productos alternativos con feedback
                 if len(matches) > 1:
                     st.write("📌 **También podrían interesarte estos productos:**")
                     for match in matches[1:]:
@@ -337,6 +418,15 @@ if st.button("Enviar Pregunta"):
                         url_key = product.get('url_key', '#')
                         product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
                         st.write(f"- [{product['name']}]({product_url}) - {price_formatted}")
+                        
+                        # Botones de feedback
+                        feedback = st.radio(
+                            f"¿Te gustó la recomendación de {product['name']}?",
+                            options=["Sí", "No"],
+                            key=f"feedback_{product['sku']}"
+                        )
+                        if st.button(f"Enviar Feedback para {product['sku']}", key=f"feedback_btn_{product['sku']}"):
+                            add_feedback(product['name'], feedback)
             else:
                 response = "Lo siento, no encontré productos que coincidan con tu consulta. ¿Podrías reformular tu pregunta?"
                 st.session_state['conversation'].append({
