@@ -184,21 +184,22 @@ class ProductAssistant:
 
     def _generate_response(self, query: str, product: Dict) -> str:
         """Genera una respuesta para un producto."""
-        prompt = f"""
-        Como asistente de ventas experto, responde a esta consulta:
-        
-        Consulta: {query}
-        
-        Producto:
-        Nombre: {product['name']}
-        Precio: ${float(product['price']):,.2f}
-        Descripción: {product.get('short_description', '')}
-        Características: {product.get('additional_attributes', '')}
-        """
-        
         try:
+            prompt = f"""
+            Como asistente de ventas experto, responde a esta consulta:
+            
+            Consulta: {query}
+            
+            Producto:
+            Nombre: {product['name']}
+            Precio: ${float(product['price']):,.2f}
+            Descripción: {product.get('short_description', '')}
+            Características: {product.get('additional_attributes', '')}
+            """
+            
+            # Actualizado para usar el nuevo formato de la API de OpenAI
             response = self.client.chat.completions.create(
-                model="chatgpt-4o-latest",
+                model="gpt-4",  # Cambiado de chatgpt-4o-latest a gpt-4
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos que ayuda a los clientes."},
                     {"role": "user", "content": prompt}
@@ -209,6 +210,7 @@ class ProductAssistant:
         except Exception as e:
             logger.error(f"Error en GPT: {e}")
             return f"Te recomiendo el {product['name']} que cuesta ${float(product['price']):,.2f}."
+
 
     def _generate_comparative_response(self, query: str, prev_product: Dict, new_product: Dict) -> str:
         """Genera una respuesta comparativa entre productos."""
