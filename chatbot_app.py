@@ -51,7 +51,7 @@ def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-4",  # Update to the correct model name
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": """
                 Eres un asistente de ventas que ayuda a los clientes a encontrar productos en nuestra tienda.
@@ -59,7 +59,7 @@ def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
                 """},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,  # Baja temperatura para respuestas más precisas
+            temperature=0.0,  # Temperatura baja para mayor precisión
             max_tokens=max_tokens,
             n=1,
         )
@@ -68,7 +68,6 @@ def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
         logger.error(f"Error al llamar a GPT-4o: {e}")
         return "Lo siento, ocurrió un error al generar la respuesta. Por favor, inténtalo de nuevo más tarde."
 
-# Update the error handling in your code to use the new OpenAI exceptions
 def handle_api_errors(func):
     """
     Decorator para manejar errores de la API de OpenAI
@@ -184,17 +183,17 @@ except Exception as e:
 
 class CSVChangeHandler(FileSystemEventHandler):
     def __init__(self, file_path):
-        self.file_path = file_path
+        self.file_path = os.path.abspath(file_path)
     
     def on_modified(self, event):
-        if event.src_path.endswith(self.file_path):
+        if os.path.abspath(event.src_path) == self.file_path:
             logger.info(f"Archivo {self.file_path} modificado.")
             st.session_state['file_changed'] = True
 
 def start_file_watcher(file_path: str):
     event_handler = CSVChangeHandler(file_path)
     observer = Observer()
-    observer.schedule(event_handler, path='.', recursive=False)
+    observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(file_path)) or '.', recursive=False)
     observer.start()
     logger.info("Watcher iniciado.")
     try:
@@ -228,26 +227,86 @@ def extract_search_terms(user_query: str) -> List[str]:
     logger.info(f"Términos de búsqueda extraídos: {lemmatized_terms}")
     return lemmatized_terms
 
-def search_products_faiss(query: str, model: SentenceTransformer, index: faiss.Index, df: pd.DataFrame, top_k: int = 5) -> List[Dict]:
+def extract_price_filter(user_query: str, df: pd.DataFrame) -> Dict:
+    """
+    Extrae el rango de precios solicitado por el usuario.
+    """
+    price_filter = {}
+    # Detectar frases como "más barato", "económico", o rangos específicos
+    if any(phrase in user_query.lower() for phrase in ["más barato", "económico", "economico"]):
+        # Definir un porcentaje de reducción, por ejemplo, 20% menos que el precio promedio
+        avg_price = df['price'].mean()
+        price_filter['max'] = avg_price * 0.8
+    # Aquí puedes agregar más lógica para detectar rangos específicos
+    return price_filter
+
+def prioritize_by_price(matches: List[Dict], ascending: bool = True) -> List[Dict]:
+    """
+    Prioriza los productos por precio.
+    """
+    try:
+        return sorted(matches, key=lambda x: x['product']['price'], reverse=not ascending)
+    except Exception as e:
+        logger.error(f"Error al priorizar por precio: {e}")
+        return matches
+
+def search_products_faiss(query: str, model: SentenceTransformer, index: faiss.Index, df: pd.DataFrame, top_k: int = 5, price_filter: Dict = None) -> List[Dict]:
     """
     Busca productos que coincidan con la consulta utilizando FAISS y embeddings.
+    Se puede aplicar un filtro de precio opcional.
     """
     try:
         if not query.strip():
             logger.warning("Consulta vacía después de filtrar stop words.")
             return []
         
-        # Generar embedding para la consulta
-        query_embedding = model.encode([query], normalize_embeddings=True)
-        # Realizar búsqueda en el índice FAISS
-        D, I = index.search(query_embedding, top_k)
-        results = []
-        for distance, idx in zip(D[0], I[0]):
-            if distance > 0:  # Similaridad positiva
-                product = df.iloc[idx].to_dict()
-                results.append({'product': product, 'score': distance})
-        logger.info(f"Productos encontrados: {len(results)}")
-        return results
+        # Aplicar filtro de precio si está especificado
+        if price_filter:
+            min_price = price_filter.get('min', df['price'].min())
+            max_price = price_filter.get('max', df['price'].max())
+            filtered_df = df[(df['price'] >= min_price) & (df['price'] <= max_price)].reset_index(drop=True)
+            if filtered_df.empty:
+                logger.info("No hay productos dentro del rango de precios especificado.")
+                return []
+            
+            # Generar embeddings para el DataFrame filtrado
+            texts = filtered_df['name'] + " " + filtered_df['description'] + " " + filtered_df['short_description']
+            embeddings_filtered = model.encode(texts.tolist(), normalize_embeddings=True)
+            faiss.normalize_L2(embeddings_filtered)
+            
+            # Crear un índice temporal para los productos filtrados
+            dimension = embeddings_filtered.shape[1]
+            quantizer = faiss.IndexFlatIP(dimension)
+            temp_index = faiss.IndexIVFFlat(quantizer, dimension, 10, faiss.METRIC_INNER_PRODUCT)
+            if not temp_index.is_trained:
+                temp_index.train(embeddings_filtered)
+            temp_index.add(embeddings_filtered)
+            
+            # Generar embedding para la consulta
+            query_embedding = model.encode([query], normalize_embeddings=True)
+            
+            # Realizar búsqueda en el índice FAISS temporal
+            D, I = temp_index.search(query_embedding, top_k)
+            
+            results = []
+            for distance, idx in zip(D[0], I[0]):
+                if distance > 0:  # Similaridad positiva
+                    product = filtered_df.iloc[idx].to_dict()
+                    results.append({'product': product, 'score': distance})
+            
+            logger.info(f"Productos encontrados con filtro de precio: {len(results)}")
+            return results
+        else:
+            # Usar el índice principal
+            query_embedding = model.encode([query], normalize_embeddings=True)
+            D, I = index.search(query_embedding, top_k)
+            results = []
+            for distance, idx in zip(D[0], I[0]):
+                if distance > 0:  # Similaridad positiva
+                    product = df.iloc[idx].to_dict()
+                    results.append({'product': product, 'score': distance})
+            logger.info(f"Productos encontrados: {len(results)}")
+            return results
     except Exception as e:
         logger.error(f"Error durante la búsqueda de productos: {e}")
         st.error("Ocurrió un error durante la búsqueda de productos. Por favor, inténtalo de nuevo más tarde.")
@@ -263,7 +322,21 @@ def format_features(features: str) -> str:
     feature_list = '\n'.join([f"- **{k.strip()}**: {v.strip()}" for k, v in feature_pairs])
     return feature_list
 
-def generate_product_response(product_info: Dict[str, str]) -> str:
+def validate_response(response: str, product_info: Dict[str, str]) -> str:
+    """
+    Valida que la respuesta generada contenga información precisa del producto.
+    """
+    # Validar el precio
+    try:
+        price = float(product_info.get('price', 0.0))
+        price_formatted = f"${price:,.2f}"
+        if price_formatted not in response:
+            response += f"\n\n**Nota:** El precio actual es {price_formatted}."
+    except:
+        pass
+    return response
+
+def generate_product_response(product_info: Dict[str, str], price_filter: Dict = None) -> str:
     """
     Genera una respuesta personalizada utilizando GPT-4o basada únicamente en la información del producto.
     """
@@ -299,15 +372,27 @@ def generate_product_response(product_info: Dict[str, str]) -> str:
     Imagen del Producto: {image_url}
     """
     
+    # Incluir el rango de precios en el prompt si está especificado
+    if price_filter:
+        min_price = price_filter.get('min', 'sin mínimo')
+        max_price = price_filter.get('max', 'sin máximo')
+        price_instructions = f"El rango de precios solicitado es hasta {max_price}."
+    else:
+        price_instructions = "No hay restricciones de precio especificadas."
+    
     # Crear el prompt para GPT-4o
     prompt = f"""
+    {price_instructions}
     Utilizando únicamente la siguiente información sobre el producto, genera una descripción conversacional y atractiva para el cliente:
-
+    
     {product_summary}
     """
     
     # Llamar a GPT-4o para generar la respuesta
     response = call_gpt4o(prompt, max_tokens=500)
+    
+    # Validar la respuesta
+    response = validate_response(response, product_info)
     
     return response
 
@@ -387,11 +472,27 @@ if st.button("Enviar Pregunta"):
             # Reconstruir la consulta sin stop words para generar una búsqueda más efectiva
             reconstructed_query = ' '.join(search_terms)
             
+            # Detectar si se solicita un filtro de precio
+            price_filter = extract_price_filter(user_question, product_data)
+            if price_filter:
+                st.write(f"💲 **Filtro de Precio Aplicado:** Hasta {price_filter.get('max', 'sin máximo')}")
+            
             # Cargar el modelo para generar embeddings de la consulta
             model = SentenceTransformer('all-MiniLM-L6-v2')
             
-            # Buscar productos relevantes usando FAISS
-            matches = search_products_faiss(reconstructed_query, model, faiss_index, product_data, top_k=5)
+            # Buscar productos relevantes usando FAISS con filtro de precio si aplica
+            matches = search_products_faiss(
+                reconstructed_query, 
+                model, 
+                faiss_index, 
+                product_data, 
+                top_k=5, 
+                price_filter=price_filter if price_filter else None
+            )
+            
+            # Priorizar los resultados por precio si se aplicó un filtro
+            if price_filter:
+                matches = prioritize_by_price(matches, ascending=True)
             
             if matches:
                 # Usar el producto más relevante para generar la respuesta
@@ -400,11 +501,11 @@ if st.button("Enviar Pregunta"):
                 # Verificar si esta es una pregunta de seguimiento
                 if st.session_state['current_product'] and "más" in user_question.lower():
                     # Utilizar el mismo producto para la pregunta de seguimiento
-                    response = generate_product_response(st.session_state['current_product'])
+                    response = generate_product_response(st.session_state['current_product'], price_filter)
                 else:
                     # Actualizar el producto actual en el estado de sesión
                     st.session_state['current_product'] = best_match
-                    response = generate_product_response(best_match)
+                    response = generate_product_response(best_match, price_filter)
                 
                 # Agregar al historial
                 st.session_state['conversation'].append({
