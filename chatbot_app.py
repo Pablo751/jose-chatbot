@@ -209,7 +209,6 @@ class ProductAssistant:
             return []
     
     def process_query_with_context(self, 
-    def process_query_with_context(self, 
                                  query: str, 
                                  previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
         """Procesa la consulta considerando el contexto y presupuesto."""
