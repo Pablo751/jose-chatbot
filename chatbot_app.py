@@ -37,7 +37,7 @@ class ProductAssistant:
                 logger.error(f"Falta la columna requerida: {col}")
                 raise ValueError(f"Falta la columna requerida: {col}")
         
-        # Manejar valores faltantes
+        # Manejar valores faltantes y tipos de datos
         df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
         df['categories'] = df['categories'].fillna('Default Category')
         df['name'] = df['name'].fillna('Nombre Desconocido')
@@ -105,7 +105,7 @@ class ProductAssistant:
             query_embedding = self.model.encode([query], show_progress_bar=False)
             faiss.normalize_L2(query_embedding)
             
-            # Generar embeddings para los productos filtrados
+            # Generar textos para los productos filtrados
             texts = []
             for _, row in filtered_df.iterrows():
                 text = f"{row['name']} "
@@ -120,10 +120,16 @@ class ProductAssistant:
                 logger.warning("No hay textos para procesar")
                 return []
                 
+            # Generar embeddings para los textos filtrados
             filtered_embeddings = self.model.encode(texts, show_progress_bar=False)
             faiss.normalize_L2(filtered_embeddings)
             
-            # Crear índice temporal
+            # Verificar la correspondencia entre embeddings y DataFrame
+            if len(filtered_embeddings) != len(filtered_df):
+                logger.error("Mismatch entre el número de embeddings y el DataFrame filtrado.")
+                return []
+            
+            # Crear índice temporal de FAISS
             temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
             temp_index.add(filtered_embeddings)
             
@@ -141,10 +147,12 @@ class ProductAssistant:
                 logger.info(f"FAISS returned distances: {D}")
                 logger.info(f"FAISS returned indices: {I}")
                 
-                # Verificar que tenemos resultados válidos
+                # Verificar y procesar los resultados
                 if len(D) > 0 and len(D[0]) > 0:
                     for distance, idx in zip(D[0], I[0]):
                         logger.debug(f"Processing index: {idx} with distance: {distance}")
+                        
+                        # Verificar que el índice está dentro del rango
                         if 0 <= idx < len(filtered_df):
                             try:
                                 product = filtered_df.iloc[idx].to_dict()
@@ -157,15 +165,13 @@ class ProductAssistant:
                                     })
                                 else:
                                     logger.warning(f"Producto con índice {idx} tiene un precio inválido.")
-                            except IndexError as ie:
-                                logger.error(f"IndexError al acceder a iloc[{idx}]: {ie}")
-                                continue
                             except Exception as e:
                                 logger.error(f"Error procesando producto {idx}: {e}")
                                 continue
                         else:
                             logger.error(f"Índice FAISS {idx} está fuera de los límites del DataFrame filtrado.")
             
+            logger.info(f"Number of products found: {len(results)}")
             return results
             
         except Exception as e:
@@ -249,7 +255,7 @@ class ProductAssistant:
             
             # Usar OpenAI correctamente
             response = openai.ChatCompletion.create(
-                model="chatgpt-4o-latest",  # Corregido
+                model="chatgpt-4o-latest",  # Mantener según solicitud del usuario
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos que ayuda a los clientes."},
                     {"role": "user", "content": prompt}
@@ -269,21 +275,21 @@ class ProductAssistant:
             
             prompt = f"""
             Como experto en ventas, compara estos productos respondiendo a: {query}
-
+    
             Producto anterior:
             Nombre: {prev_product['name']}
             Precio: ${float(prev_product['price']):,.2f}
             Características: {prev_product.get('additional_attributes', '')}
-
+    
             Producto nuevo (más económico):
             Nombre: {new_product['name']}
             Precio: ${float(new_product['price']):,.2f}
             Ahorro: ${savings:,.2f}
             Características: {new_product.get('additional_attributes', '')}
             """
-
+    
             response = openai.ChatCompletion.create(
-                model="chatgpt-4o-latest",  # Corregido
+                model="chatgpt-4o-latest",  # Mantener según solicitud del usuario
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos especializado en encontrar las mejores ofertas."},
                     {"role": "user", "content": prompt}
@@ -295,6 +301,7 @@ class ProductAssistant:
             logger.error(f"Error generando respuesta comparativa: {e}")
             return f"He encontrado el {new_product['name']} a ${float(new_product['price']):,.2f}, " \
                    f"que te permite ahorrar ${savings:,.2f} comparado con la opción anterior."
+
 
 def main():
     st.set_page_config(
