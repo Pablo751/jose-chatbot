@@ -62,7 +62,6 @@ class ProductAssistant:
         self.faiss_index.add(self.embeddings)
 
     def search_products(self, 
-    def search_products(self, 
                        query: str, 
                        category: Optional[str] = None, 
                        max_price: Optional[float] = None,
