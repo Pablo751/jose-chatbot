@@ -208,9 +208,7 @@ class ProductAssistant:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
     
-    def process_query_with_context(self, 
-                                   query: str, 
-                                   previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
+    def process_query_with_context(self, query: str, previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
 
         """Procesa la consulta considerando el contexto y presupuesto."""
         try:
