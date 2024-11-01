@@ -1,3 +1,4 @@
+# Requisitos principales del proyecto
 streamlit==1.31.0
 openai>=1.0.0
 pandas==2.2.0
@@ -7,3 +8,12 @@ sentence-transformers
 faiss-cpu
 watchdog
 nltk
+
+# Dependencias adicionales necesarias para el funcionamiento de sentence-transformers y FAISS
+torch
+scikit-learn
+transformers
+scipy
+
+# (Opcional) Dependencias para pruebas automatizadas
+# pytest
