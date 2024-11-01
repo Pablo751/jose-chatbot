@@ -3,3 +3,5 @@ openai>=1.0.0
 pandas==2.2.0
 numpy==1.26.3
 python-dotenv==1.0.0
+fuzzywuzzy
+python-Levenshtein
