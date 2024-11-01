@@ -38,7 +38,7 @@ def extract_search_terms(user_query: str) -> List[str]:
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-2024-08-06",
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": """
                 Extrae palabras clave relevantes para búsqueda de productos. 
@@ -96,47 +96,23 @@ def search_products(df: pd.DataFrame, search_terms: List[str], threshold: float 
     matches.sort(key=lambda x: x['score'], reverse=True)
     return matches[:5]  # Retornar los 5 mejores resultados
 
-
 def generate_product_response(product_info: Dict[str, str], user_question: str) -> str:
     """
-    Genera una respuesta personalizada basada en la información del producto y la pregunta del usuario.
+    Genera una respuesta personalizada basada únicamente en la información del producto.
     """
-    # Construir un prompt rico en contexto
-    system_prompt = """
-    Eres un experto asistente de ventas para productos eléctricos Bticino.
-    Proporciona respuestas detalladas y precisas sobre los productos.
-    Incluye información técnica cuando sea relevante.
-    Sé profesional pero amigable.
-    Si no tienes información específica sobre algo, indícalo claramente.
-    """
+    response = f"""
+    **Producto:** {product_info.get('name', 'Información no disponible')}
     
-    user_prompt = f"""
-    Información del Producto:
-    Nombre: {product_info.get('name', 'N/A')}
-    SKU: {product_info.get('sku', 'N/A')}
-    Precio: {product_info.get('price', 'N/A')}
-    Descripción: {product_info.get('description', 'N/A')}
-    Descripción Corta: {product_info.get('short_description', 'N/A')}
-    Atributos Adicionales: {product_info.get('additional_attributes', 'N/A')}
-
-    Pregunta del Cliente: {user_question}
-
-    Por favor, proporciona una respuesta útil y relevante basada en esta información.
+    **Descripción:** {product_info.get('short_description', 'Información no disponible')}
+    
+    **Precio:** ${product_info.get('price', 'Información no disponible')}
+    
+    **Características:**
+    {product_info.get('additional_attributes', 'Información no disponible')}
+    
+    **¿En qué más puedo ayudarte sobre este producto?**
     """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=500
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Lo siento, ocurrió un error al generar la respuesta: {e}"
+    return response
 
 # -------------------------------
 # 4. Cargar y Preprocesar Datos
@@ -149,8 +125,12 @@ def load_product_data(file_path: str) -> pd.DataFrame:
     """
     columns_to_load = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes']
     df = pd.read_csv(file_path, usecols=columns_to_load)
+    
+    # Verificar valores nulos
+    if df[columns_to_load].isnull().any().any():
+        st.warning("Algunos productos tienen información incompleta. Revisar el CSV.")
+    
     return df
-
 
 # -------------------------------
 # 5. Interfaz Principal con Soporte de Follow-Up
@@ -210,7 +190,7 @@ if st.button("Enviar Pregunta"):
                 if len(matches) > 1:
                     st.write("📌 También podrían interesarte estos productos:")
                     for match in matches[1:]:
-                        st.write(f"- {match['product']['name']}")
+                        st.write(f"- **{match['product']['name']}** - ${match['product']['price']}")
             else:
                 response = "Lo siento, no encontré productos que coincidan con tu consulta. ¿Podrías reformular tu pregunta?"
                 st.session_state['conversation'].append({
