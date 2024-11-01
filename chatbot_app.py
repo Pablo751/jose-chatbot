@@ -144,13 +144,15 @@ def generate_product_response(product_info: Dict[str, str], user_question: str) 
 @st.cache_data
 def load_product_data(file_path: str) -> pd.DataFrame:
     """
-    Carga y preprocesa los datos de productos.
+    Carga y preprocesa los datos de productos con solo las columnas esenciales.
     """
-    df = pd.read_csv(file_path)
+    columns_to_load = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes']
+    df = pd.read_csv(file_path, usecols=columns_to_load)
     return df
 
+
 # -------------------------------
-# 5. Interfaz Principal
+# 5. Interfaz Principal con Soporte de Follow-Up
 # -------------------------------
 
 # Cargar datos
@@ -165,9 +167,11 @@ except Exception as e:
 st.write("👋 ¡Hola! Soy tu asistente de productos. ¿En qué puedo ayudarte?")
 user_question = st.text_input("Escribe tu pregunta aquí:", key="user_input")
 
-# Inicializar historial de conversación
+# Inicializar historial de conversación y contexto del producto
 if 'conversation' not in st.session_state:
     st.session_state['conversation'] = []
+if 'current_product' not in st.session_state:
+    st.session_state['current_product'] = None  # Producto actual para preguntas de seguimiento
 
 # Procesar la pregunta
 if st.button("Enviar Pregunta"):
@@ -184,7 +188,15 @@ if st.button("Enviar Pregunta"):
             if matches:
                 # Usar el producto más relevante para generar la respuesta
                 best_match = matches[0]['product']
-                response = generate_product_response(best_match, user_question)
+                
+                # Verificar si esta es una pregunta de seguimiento
+                if st.session_state['current_product'] and "más" in user_question.lower():
+                    # Utilizar el mismo producto para la pregunta de seguimiento
+                    response = generate_product_response(st.session_state['current_product'], user_question)
+                else:
+                    # Actualizar el producto actual en el estado de sesión
+                    st.session_state['current_product'] = best_match
+                    response = generate_product_response(best_match, user_question)
                 
                 # Agregar al historial
                 st.session_state['conversation'].append({
@@ -216,7 +228,8 @@ if st.session_state['conversation']:
             st.write(f"*Producto relacionado: {entry['product']}*")
         st.markdown("---")
 
-# Botón para limpiar historial
+# Botón para limpiar historial y resetear producto actual
 if st.button("Limpiar Historial"):
     st.session_state['conversation'] = []
+    st.session_state['current_product'] = None
     st.experimental_rerun()
