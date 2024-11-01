@@ -2,182 +2,195 @@
 
 import streamlit as st
 import pandas as pd
-from openai import OpenAI  
+from sentence_transformers import SentenceTransformer
+import faiss
 from typing import Optional, Dict, List
 import numpy as np
-from difflib import get_close_matches
-from fuzzywuzzy import fuzz
+import re
 
 # -------------------------------
-# 1. Configurar el Cliente OpenAI
-# -------------------------------
-
-client = OpenAI(
-    api_key=st.secrets["OPENAI_API_KEY"]
-)
-
-# -------------------------------
-# 2. Configuración de la Aplicación Streamlit
+# 1. Configurar la Aplicación Streamlit
 # -------------------------------
 
 st.set_page_config(
     page_title="💬 Asistente de Productos",
     page_icon="💬",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
 
 st.title("💬 Asistente de Productos")
 
 # -------------------------------
-# 3. Funciones de Búsqueda y Coincidencia
+# 2. Cargar y Preprocesar Datos
 # -------------------------------
 
-def extract_search_terms(user_query: str) -> List[str]:
-    """
-    Utiliza OpenAI para extraer términos relevantes de búsqueda de la consulta del usuario.
-    """
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": """
-                Extrae palabras clave relevantes para búsqueda de productos. 
-                Enfócate en:
-                - Nombre del producto
-                - Características técnicas
-                - Color
-                - Marca
-                - Tipo de producto
-                Devuelve solo las palabras clave separadas por comas, sin explicaciones.
-                """},
-                {"role": "user", "content": f"Extract keywords from: {user_query}"}
-            ],
-            temperature=0.3,
-            max_tokens=100
-        )
-        keywords = response.choices[0].message.content.split(',')
-        # Filtrar palabras vacías comunes
-        stop_words = {'de', 'un', 'una', 'me', 'puedes', 'recomendar', 'economico', 'económico'}
-        filtered_keywords = [k.strip().lower() for k in keywords if k.strip().lower() not in stop_words]
-        return filtered_keywords
-    except Exception as e:
-        st.error(f"Error al extraer términos de búsqueda: {e}")
-        return []
-
-def search_products(df: pd.DataFrame, search_terms: List[str], threshold: float = 70) -> List[Dict]:
-    """
-    Busca productos que coincidan con los términos de búsqueda utilizando fuzzy matching.
-    """
-    matches = []
-    
-    # Campos relevantes para la búsqueda
-    search_fields = ['name', 'description', 'short_description', 'additional_attributes']
-    
-    for _, row in df.iterrows():
-        score = 0
-        max_score = len(search_terms)
-        
-        # Combinar todos los campos de texto relevantes
-        text_to_search = ' '.join(str(row[field]).lower() for field in search_fields if field in df.columns)
-        
-        # Calcular coincidencias usando fuzzy matching
-        for term in search_terms:
-            term = term.lower()
-            # Dividir el texto en palabras para comparar individualmente
-            words = text_to_search.split()
-            best_ratio = max([fuzz.partial_ratio(term, word) for word in words] or [0])
-            if best_ratio >= threshold:
-                score += 1
-        
-        # Calcular puntuación normalizada
-        normalized_score = score / max_score if max_score > 0 else 0
-        
-        if normalized_score >= (threshold / 100):
-            matches.append({
-                'product': row.to_dict(),
-                'score': normalized_score
-            })
-    
-    # Ordenar por puntuación
-    matches.sort(key=lambda x: x['score'], reverse=True)
-    return matches[:5]  # Retornar los 5 mejores resultados
-
-def generate_product_response(product_info: Dict[str, str], user_question: str) -> str:
-    """
-    Genera una respuesta personalizada basada únicamente en la información del producto.
-    """
-    response = f"""
-    **Producto:** {product_info.get('name', 'Información no disponible')}
-    
-    **Descripción:** {product_info.get('short_description', 'Información no disponible')}
-    
-    **Precio:** ${product_info.get('price', 'Información no disponible')}
-    
-    **Características:**
-    {product_info.get('additional_attributes', 'Información no disponible')}
-    
-    **¿En qué más puedo ayudarte sobre este producto?**
-    """
-    return response
-
-# -------------------------------
-# 4. Cargar y Preprocesar Datos
-# -------------------------------
-
-@st.cache_data
+@st.cache_data(show_spinner=False)
 def load_product_data(file_path: str) -> pd.DataFrame:
     """
     Carga y preprocesa los datos de productos con solo las columnas esenciales.
     """
-    columns_to_load = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes']
+    columns_to_load = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes', 'base_image', 'url_key']
     df = pd.read_csv(file_path, usecols=columns_to_load)
     
-    # Verificar valores nulos
-    if df[columns_to_load].isnull().any().any():
-        st.warning("Algunos productos tienen información incompleta. Revisar el CSV.")
+    # Limpiar y rellenar valores nulos
+    df.fillna({'additional_attributes': 'Información no disponible', 
+              'short_description': 'Información no disponible',
+              'description': 'Información no disponible',
+              'price': 0.0,
+              'base_image': '',
+              'url_key': '#'}, inplace=True)
     
     return df
 
-def validate_csv(file_path: str) -> bool:
-    try:
-        df = pd.read_csv(file_path)
-        # Verificar si todas las filas tienen el número correcto de columnas
-        expected_columns = ['sku', 'store_view_code', 'attribute_set_code', 'product_type', 'categories', 'product_websites', 'name', 'description', 'short_description', 'weight', 'product_online', 'tax_class_name', 'visibility', 'price', 'special_price', 'special_price_from_date', 'special_price_to_date', 'url_key', 'meta_title', 'meta_keywords', 'meta_description', 'base_image', 'base_image_label', 'small_image', 'small_image_label', 'thumbnail_image', 'thumbnail_image_label', 'swatch_image', 'swatch_image_label', 'created_at', 'updated_at', 'new_from_date', 'new_to_date', 'display_product_options_in', 'map_price', 'msrp_price', 'map_enabled', 'gift_message_available', 'custom_design', 'custom_design_from', 'custom_design_to', 'custom_layout_update', 'page_layout', 'product_options_container', 'msrp_display_actual_price_type', 'country_of_manufacture', 'activity', 'gender', 'size', 'product_tag', 'manufacturer', 'additional_attributes', 'qty', 'out_of_stock_qty', 'use_config_min_qty', 'is_qty_decimal', 'allow_backorders', 'use_config_backorders', 'min_cart_qty', 'use_config_min_sale_qty', 'max_cart_qty', 'use_config_max_sale_qty', 'is_in_stock', 'notify_on_stock_below', 'use_config_notify_stock_qty', 'manage_stock', 'use_config_manage_stock', 'use_config_qty_increments', 'qty_increments', 'use_config_enable_qty_inc', 'enable_qty_increments', 'is_decimal_divided', 'website_id', 'related_skus', 'related_position', 'crosssell_skus', 'crosssell_position', 'upsell_skus', 'upsell_position', 'additional_images', 'additional_image_labels', 'hide_from_product_page', 'bundle_price_type', 'bundle_sku_type', 'bundle_price_view', 'bundle_weight_type', 'bundle_values', 'bundle_shipment_type', 'associated_skus', 'downloadable_links', 'downloadable_samples', 'configurable_variations', 'configurable_variation_labels']
-        
-        if list(df.columns) != expected_columns:
-            st.error("Las columnas del CSV no coinciden con las esperadas.")
-            return False
-        
-        # Verificar valores nulos en columnas esenciales
-        essential_columns = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes']
-        if df[essential_columns].isnull().any().any():
-            st.warning("Algunos productos tienen información incompleta. Revisar el CSV.")
-        
-        return True
-    except Exception as e:
-        st.error(f"Error al validar el CSV: {e}")
+def validate_csv(df: pd.DataFrame) -> bool:
+    """
+    Valida que el DataFrame tenga las columnas esenciales y que no falten datos críticos.
+    """
+    expected_columns = ['sku', 'name', 'description', 'short_description', 'price', 'additional_attributes', 'base_image', 'url_key']
+    if not all(column in df.columns for column in expected_columns):
+        st.error("El CSV no contiene todas las columnas requeridas.")
         return False
+    
+    # Verificar valores nulos en columnas esenciales
+    essential_columns = ['sku', 'name', 'price']
+    if df[essential_columns].isnull().any().any():
+        st.warning("Algunos productos tienen información incompleta. Revisar el CSV.")
+    
+    return True
 
-# -------------------------------
-# 5. Interfaz Principal con Soporte de Follow-Up
-# -------------------------------
-
-# Cargar y validar datos
+# Cargar datos
+product_file = 'data/jose.csv'
 try:
-    if validate_csv('data/jose.csv'):
-        product_data = load_product_data('data/jose.csv')
-        st.sidebar.success("✅ Catálogo de productos cargado correctamente")
-    else:
-        st.error("El CSV no pasó la validación. Por favor, revisa el archivo.")
+    product_data = load_product_data(product_file)
+    if not validate_csv(product_data):
         st.stop()
+    st.sidebar.success("✅ Catálogo de productos cargado correctamente")
 except Exception as e:
     st.error(f"Error al cargar el catálogo de productos: {e}")
     st.stop()
 
-# Entrada del usuario
-st.write("👋 ¡Hola! Soy tu asistente de productos. ¿En qué puedo ayudarte?")
-user_question = st.text_input("Escribe tu pregunta aquí:", key="user_input")
+# -------------------------------
+# 3. Generar Embeddings y Configurar FAISS
+# -------------------------------
+
+@st.cache_resource(show_spinner=False)
+def generate_embeddings(df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2') -> (np.ndarray, faiss.Index):
+    """
+    Genera embeddings para los productos y configura el índice FAISS.
+    """
+    model = SentenceTransformer(model_name)
+    # Concatenar campos relevantes para generar el embedding
+    texts = df['name'] + " " + df['description'] + " " + df['short_description']
+    embeddings = model.encode(texts.tolist(), show_progress_bar=True)
+    
+    # Normalizar embeddings
+    faiss.normalize_L2(embeddings)
+    
+    # Crear índice FAISS
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dimension)  # Inner Product (cosine similarity after normalization)
+    index.add(embeddings)
+    
+    return embeddings, index
+
+try:
+    embeddings, faiss_index = generate_embeddings(product_data)
+except Exception as e:
+    st.error(f"Error al generar embeddings: {e}")
+    st.stop()
+
+# -------------------------------
+# 4. Funciones de Búsqueda y Coincidencia
+# -------------------------------
+
+def extract_search_terms(user_query: str) -> List[str]:
+    """
+    Extrae términos relevantes de búsqueda de la consulta del usuario.
+    Se pueden implementar reglas adicionales o utilizar NLP avanzado aquí.
+    """
+    # Convertir a minúsculas
+    user_query = user_query.lower()
+    # Remover caracteres especiales
+    user_query = re.sub(r'[^\w\s]', '', user_query)
+    # Tokenizar
+    terms = user_query.split()
+    # Filtrar palabras irrelevantes
+    stop_words = {'de', 'un', 'una', 'me', 'puedes', 'recomendar', 'economico', 'económico', 'por', 'que', 'que', 'puedo', 'el', 'la', 'los', 'las'}
+    filtered_terms = [term for term in terms if term not in stop_words]
+    return filtered_terms
+
+def search_products_faiss(query: str, model: SentenceTransformer, index: faiss.Index, df: pd.DataFrame, top_k: int = 5) -> List[Dict]:
+    """
+    Busca productos que coincidan con la consulta utilizando FAISS y embeddings.
+    """
+    # Generar embedding para la consulta
+    query_embedding = model.encode([query], normalize_embeddings=True)
+    # Realizar búsqueda en el índice FAISS
+    D, I = index.search(query_embedding, top_k)
+    results = []
+    for distance, idx in zip(D[0], I[0]):
+        if distance > 0:  # Similaridad positiva
+            product = df.iloc[idx].to_dict()
+            results.append({'product': product, 'score': distance})
+    return results
+
+def format_features(features: str) -> str:
+    """
+    Formatea las características del producto como una lista con viñetas.
+    """
+    if features == 'Información no disponible':
+        return features
+    feature_pairs = [attr.split('=') for attr in features.split(',') if '=' in attr]
+    feature_list = '\n'.join([f"- **{k.strip()}**: {v.strip()}" for k, v in feature_pairs])
+    return feature_list
+
+def generate_product_response(product_info: Dict[str, str]) -> str:
+    """
+    Genera una respuesta personalizada basada únicamente en la información del producto.
+    Incluye formato Markdown para una mejor presentación.
+    """
+    # Formatear el precio
+    try:
+        price = float(product_info.get('price', 0.0))
+        price_formatted = f"${price:,.2f}"
+    except:
+        price_formatted = "Información no disponible"
+    
+    # Formatear características
+    features_formatted = format_features(product_info.get('additional_attributes', 'Información no disponible'))
+    
+    # URL del producto
+    url_key = product_info.get('url_key', '#')
+    product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
+    
+    # Imagen del producto
+    base_image = product_info.get('base_image', '')
+    if base_image:
+        image_url = f"https://tutienda.com/{base_image}"  # Reemplaza con la URL base de tus imágenes
+    else:
+        image_url = "https://via.placeholder.com/150"  # Imagen por defecto
+    
+    # Construir la respuesta con formato Markdown enriquecido
+    response = f"""
+**Producto:** [{product_info.get('name', 'Información no disponible')}]({product_url})
+
+![{product_info.get('name', 'Producto')}]({image_url})
+
+**Descripción:** {product_info.get('short_description', 'Información no disponible')}
+
+**Precio:** {price_formatted}
+
+**Características:**
+{features_formatted}
+
+**¿En qué más puedo ayudarte sobre este producto?**
+"""
+    return response
+
+# -------------------------------
+# 5. Interfaz Principal con Soporte de Follow-Up
+# -------------------------------
 
 # Inicializar historial de conversación y contexto del producto
 if 'conversation' not in st.session_state:
@@ -185,7 +198,11 @@ if 'conversation' not in st.session_state:
 if 'current_product' not in st.session_state:
     st.session_state['current_product'] = None  # Producto actual para preguntas de seguimiento
 
-# Procesar la pregunta
+# Entrada del usuario
+st.write("👋 ¡Hola! Soy tu asistente de productos. ¿En qué puedo ayudarte?")
+user_question = st.text_input("Escribe tu pregunta aquí:", key="user_input")
+
+# Botón para enviar la pregunta
 if st.button("Enviar Pregunta"):
     if not user_question:
         st.warning("Por favor, ingresa una pregunta.")
@@ -195,8 +212,14 @@ if st.button("Enviar Pregunta"):
             search_terms = extract_search_terms(user_question)
             st.write(f"🔍 **Términos de Búsqueda:** {', '.join(search_terms)}")  # Mostrar términos extraídos
             
-            # Buscar productos relevantes
-            matches = search_products(product_data, search_terms)
+            # Reconstruir la consulta sin stop words para generar una búsqueda más efectiva
+            reconstructed_query = ' '.join(search_terms)
+            
+            # Cargar el modelo para generar embeddings de la consulta
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            # Buscar productos relevantes usando FAISS
+            matches = search_products_faiss(reconstructed_query, model, faiss_index, product_data, top_k=5)
             
             if matches:
                 # Usar el producto más relevante para generar la respuesta
@@ -205,11 +228,11 @@ if st.button("Enviar Pregunta"):
                 # Verificar si esta es una pregunta de seguimiento
                 if st.session_state['current_product'] and "más" in user_question.lower():
                     # Utilizar el mismo producto para la pregunta de seguimiento
-                    response = generate_product_response(st.session_state['current_product'], user_question)
+                    response = generate_product_response(st.session_state['current_product'])
                 else:
                     # Actualizar el producto actual en el estado de sesión
                     st.session_state['current_product'] = best_match
-                    response = generate_product_response(best_match, user_question)
+                    response = generate_product_response(best_match)
                 
                 # Agregar al historial
                 st.session_state['conversation'].append({
@@ -218,14 +241,24 @@ if st.button("Enviar Pregunta"):
                     "product": best_match['name']
                 })
                 
-                # Mostrar respuesta
-                st.write(f"**Respuesta:** {response}")
+                # Mostrar la respuesta utilizando Markdown para un mejor formato
+                st.markdown(response)
                 
                 # Mostrar productos alternativos
                 if len(matches) > 1:
-                    st.write("📌 También podrían interesarte estos productos:")
+                    st.write("📌 **También podrían interesarte estos productos:**")
                     for match in matches[1:]:
-                        st.write(f"- **{match['product']['name']}** - ${match['product']['price']}")
+                        product = match['product']
+                        # Formatear el precio
+                        try:
+                            price = float(product.get('price', 0.0))
+                            price_formatted = f"${price:,.2f}"
+                        except:
+                            price_formatted = "Información no disponible"
+                        # URL del producto
+                        url_key = product.get('url_key', '#')
+                        product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
+                        st.write(f"- [{product['name']}]({product_url}) - {price_formatted}")
             else:
                 response = "Lo siento, no encontré productos que coincidan con tu consulta. ¿Podrías reformular tu pregunta?"
                 st.session_state['conversation'].append({
@@ -233,14 +266,14 @@ if st.button("Enviar Pregunta"):
                     "response": response,
                     "product": None
                 })
-                st.write(f"**Respuesta:** {response}")
+                st.markdown(f"**Respuesta:** {response}")
 
 # Mostrar historial de conversación
 if st.session_state['conversation']:
     st.write("### Historial de Conversación")
     for i, entry in enumerate(reversed(st.session_state['conversation']), 1):
         st.write(f"**Pregunta {i}:** {entry['question']}")
-        st.write(f"**Respuesta {i}:** {entry['response']}")
+        st.markdown(f"**Respuesta {i}:** {entry['response']}")
         if entry['product']:
             st.write(f"*Producto relacionado: {entry['product']}*")
         st.markdown("---")
