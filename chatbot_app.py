@@ -253,9 +253,9 @@ class ProductAssistant:
         try:
             # Patrones comunes de rangos de precio
             patterns = [
-                r'(?:entre|de)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:a|y|hasta)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
-                r'(?:menos de|bajo|máximo)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
-                r'(?:presupuesto de)\s*(?:$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)'
+                r'(?:entre|de)\s*(?:\$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:a|y|hasta)\s*(?:\$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
+                r'(?:menos de|bajo|máximo)\s*(?:\$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)',
+                r'(?:presupuesto de)\s*(?:\$|₱|₿)?\s*(\d+(?:,\d+)?(?:\.\d+)?)'
             ]
             
             for pattern in patterns:
@@ -273,6 +273,7 @@ class ProductAssistant:
         except Exception as e:
             logger.error(f"Error extrayendo rango de precios: {e}")
             return None
+
     
     def _filter_and_sort_results(self, 
                                results: List[Dict], 
