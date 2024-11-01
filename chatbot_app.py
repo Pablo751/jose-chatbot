@@ -208,8 +208,11 @@ class ProductAssistant:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
     
-    def process_query_with_context(self, query: str, previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
-
+    def process_query_with_context(
+            self, 
+            query: str, 
+            previous_results: Optional[List[Dict]] = None
+        ) -> Tuple[List[Dict], str]:
         """Procesa la consulta considerando el contexto y presupuesto."""
         try:
             if not query.strip():
@@ -231,13 +234,15 @@ class ProductAssistant:
             )
             
             if not results:
-                return [], self._generate_no_results_response(min_price, max_price)
+                return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles?"
             
             # Filtrar productos por precio y ordenar por relevancia
             filtered_results = self._filter_and_sort_results(results, min_price, max_price)
             
             if not filtered_results:
-                return [], self._generate_out_of_budget_response(results, min_price, max_price)
+                return [], (f"Encontré algunos productos pero están fuera de tu rango de precio "
+                           f"(${min_price:,.2f} - ${max_price:,.2f}). "
+                           "¿Te gustaría ver otras opciones?")
             
             response = self._generate_budget_aware_response(filtered_results, query, min_price, max_price)
             return filtered_results, response
