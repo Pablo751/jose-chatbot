@@ -62,63 +62,76 @@ class ProductAssistant:
         self.faiss_index.add(self.embeddings)
 
     def search_products(self, 
-                           query: str, 
-                           category: Optional[str] = None, 
-                           max_price: Optional[float] = None,
-                           top_k: int = 5) -> List[Dict]:
-            """Búsqueda de productos con filtros."""
-            try:
-                # Crear una copia del DataFrame para no modificar el original
-                filtered_df = self.product_data.copy()
-                
-                # Aplicar filtros
-                if category:
-                    filtered_df = filtered_df[filtered_df['categories'].str.contains(category, na=False)]
-                if max_price:
-                    filtered_df = filtered_df[filtered_df['price'] < max_price]
-                    
-                if filtered_df.empty:
-                    return []
-                    
-                # Realizar búsqueda semántica
-                query_embedding = self.model.encode([query], normalize_embeddings=True)
-                
-                # Asegurar que no pedimos más resultados de los disponibles
-                k = min(top_k, len(filtered_df))
-                if k == 0:
-                    return []
-                    
-                D, I = self.faiss_index.search(query_embedding, k)
-                
-                results = []
-                for distance, idx in zip(D[0], I[0]):
-                    if idx < len(filtered_df):  # Verificar que el índice es válido
-                        product = filtered_df.iloc[idx].to_dict()
-                        if float(product['price']) > 0:  # Solo incluir productos con precio válido
-                            results.append({
-                                'product': product,
-                                'score': float(distance),
-                                'query': query  # Guardar la consulta original
-                            })
-                
-                # Ordenar por precio si se especificó un máximo
-                if max_price:
-                    results.sort(key=lambda x: float(x['product']['price']))
-                    
-                return results
-            except Exception as e:
-                logger.error(f"Error en búsqueda de productos: {e}")
+                       query: str, 
+                       category: Optional[str] = None, 
+                       max_price: Optional[float] = None,
+                       top_k: int = 5) -> List[Dict]:
+        """Búsqueda mejorada de productos con manejo correcto de índices."""
+        try:
+            # Crear una copia del DataFrame para no modificar el original
+            filtered_df = self.product_data.copy()
+            
+            # Aplicar filtros y mantener un registro de los índices originales
+            if category:
+                category_mask = filtered_df['categories'].str.contains(category, na=False)
+                filtered_df = filtered_df[category_mask]
+            if max_price:
+                price_mask = filtered_df['price'] < max_price
+                filtered_df = filtered_df[price_mask]
+            
+            if filtered_df.empty:
                 return []
-
+            
+            # Generar embedding para la consulta
+            query_embedding = self.model.encode([query], normalize_embeddings=True)
+            
+            # Crear embeddings solo para los productos filtrados
+            texts = (filtered_df['name'] + " " + 
+                    filtered_df['description'] + " " + 
+                    filtered_df['short_description'])
+            filtered_embeddings = self.model.encode(texts.tolist(), show_progress_bar=False)
+            faiss.normalize_L2(filtered_embeddings)
+            
+            # Crear un índice temporal para los productos filtrados
+            temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
+            if len(filtered_embeddings) > 0:
+                temp_index.add(filtered_embeddings)
+            
+            # Realizar la búsqueda
+            k = min(top_k, len(filtered_df))
+            if k == 0:
+                return []
+                
+            D, I = temp_index.search(query_embedding, k)
+            
+            results = []
+            for distance, idx in zip(D[0], I[0]):
+                if distance > 0 and idx < len(filtered_df):  # Verificar índice válido
+                    product = filtered_df.iloc[idx].to_dict()
+                    if float(product['price']) > 0:  # Solo incluir productos con precio válido
+                        results.append({
+                            'product': product,
+                            'score': float(distance),
+                            'query': query
+                        })
+            
+            # Ordenar por precio si se especificó un máximo
+            if max_price:
+                results.sort(key=lambda x: float(x['product']['price']))
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error en búsqueda de productos: {e}")
+            return []
+    
     def process_query_with_context(self, 
                                  query: str, 
                                  previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
         """Procesa la consulta considerando el contexto anterior."""
         try:
-            # Si no hay consulta, retornar error amigable
             if not query.strip():
                 return [], "Por favor, hazme una pregunta sobre los productos."
-                
+            
             # Detectar si es una pregunta sobre precio
             price_related = re.search(r'más barato|más económico|menor precio|barato|económico', query.lower()) is not None
             
@@ -127,24 +140,28 @@ class ProductAssistant:
                 if not prev_product:
                     return [], "No encontré el producto anterior. ¿Podrías repetir tu pregunta inicial?"
                 
-                # Obtener precio y categoría del producto anterior
-                prev_price = float(prev_product['price'])
+                try:
+                    prev_price = float(prev_product['price'])
+                except (ValueError, TypeError):
+                    return [], "Hubo un problema con el precio del producto anterior. ¿Podrías hacer tu pregunta de nuevo?"
+                
+                # Extraer categoría del producto anterior
                 prev_category = None
                 if 'categories' in prev_product:
                     categories = str(prev_product['categories']).split(',')
                     if categories:
-                        prev_category = categories[0].strip()
+                        # Tomar la categoría más específica (última)
+                        prev_category = categories[-1].strip()
                 
                 # Buscar productos más baratos
                 results = self.search_products(
-                    query=previous_results[0].get('query', query),  # Usar la consulta original o la actual
+                    query=previous_results[0].get('query', ''),  # Usar la consulta original
                     category=prev_category,
                     max_price=prev_price * 0.95,  # 5% más barato
                     top_k=5
                 )
                 
                 if results:
-                    # Generar respuesta comparativa
                     response = self._generate_comparative_response(
                         query=query,
                         prev_product=prev_product,
@@ -152,12 +169,12 @@ class ProductAssistant:
                     )
                     return results, response
                 else:
-                    return [], f"Lo siento, no encontré productos más económicos que el {prev_product['name']} (${prev_price:,.2f})."
+                    return [], f"No encontré productos más económicos que el {prev_product['name']} (${prev_price:,.2f}). ¿Te gustaría ver alternativas en otra categoría?"
             
-            # Búsqueda normal si no es comparativa o no hay contexto
+            # Búsqueda normal
             results = self.search_products(query)
             if not results:
-                return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles?"
+                return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles sobre lo que buscas?"
             
             response = self._generate_response(query, results[0]['product'])
             return results, response
