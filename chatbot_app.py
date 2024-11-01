@@ -61,82 +61,111 @@ class ProductAssistant:
         self.faiss_index = faiss.IndexFlatIP(dimension)
         self.faiss_index.add(self.embeddings)
 
-    def search_products(self, query: str, category: str = None, max_price: float = None, top_k: int = 5) -> List[Dict]:
-        """Búsqueda de productos con filtros."""
-        filtered_df = self.product_data.copy()
-        
-        if category:
-            filtered_df = filtered_df[filtered_df['categories'].str.contains(category, na=False)]
-        if max_price:
-            filtered_df = filtered_df[filtered_df['price'] < max_price]
-            
-        if filtered_df.empty:
-            return []
-            
-        query_embedding = self.model.encode([query], normalize_embeddings=True)
-        D, I = self.faiss_index.search(query_embedding, min(top_k, len(filtered_df)))
-        
-        results = []
-        for distance, idx in zip(D[0], I[0]):
-            if distance > 0:  # Solo incluir resultados relevantes
-                product = filtered_df.iloc[idx].to_dict()
-                results.append({
-                    'product': product,
-                    'score': float(distance),
-                    'query': query  # Guardar la consulta original
-                })
-        
-        # Ordenar por precio si se especificó un máximo
-        if max_price:
-            results.sort(key=lambda x: float(x['product']['price']))
-            
-        return results
+    def search_products(self, 
+                           query: str, 
+                           category: Optional[str] = None, 
+                           max_price: Optional[float] = None,
+                           top_k: int = 5) -> List[Dict]:
+            """Búsqueda de productos con filtros."""
+            try:
+                # Crear una copia del DataFrame para no modificar el original
+                filtered_df = self.product_data.copy()
+                
+                # Aplicar filtros
+                if category:
+                    filtered_df = filtered_df[filtered_df['categories'].str.contains(category, na=False)]
+                if max_price:
+                    filtered_df = filtered_df[filtered_df['price'] < max_price]
+                    
+                if filtered_df.empty:
+                    return []
+                    
+                # Realizar búsqueda semántica
+                query_embedding = self.model.encode([query], normalize_embeddings=True)
+                
+                # Asegurar que no pedimos más resultados de los disponibles
+                k = min(top_k, len(filtered_df))
+                if k == 0:
+                    return []
+                    
+                D, I = self.faiss_index.search(query_embedding, k)
+                
+                results = []
+                for distance, idx in zip(D[0], I[0]):
+                    if idx < len(filtered_df):  # Verificar que el índice es válido
+                        product = filtered_df.iloc[idx].to_dict()
+                        if float(product['price']) > 0:  # Solo incluir productos con precio válido
+                            results.append({
+                                'product': product,
+                                'score': float(distance),
+                                'query': query  # Guardar la consulta original
+                            })
+                
+                # Ordenar por precio si se especificó un máximo
+                if max_price:
+                    results.sort(key=lambda x: float(x['product']['price']))
+                    
+                return results
+            except Exception as e:
+                logger.error(f"Error en búsqueda de productos: {e}")
+                return []
 
     def process_query_with_context(self, 
                                  query: str, 
                                  previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
         """Procesa la consulta considerando el contexto anterior."""
-        # Detectar si es una pregunta sobre precio
-        price_related = re.search(r'más barato|más económico|menor precio|barato|económico', query.lower()) is not None
-        
-        if price_related and previous_results and previous_results[0]['product']:
-            # Obtener precio del producto anterior
-            prev_product = previous_results[0]['product']
-            prev_price = float(prev_product['price'])
-            prev_category = None
+        try:
+            # Si no hay consulta, retornar error amigable
+            if not query.strip():
+                return [], "Por favor, hazme una pregunta sobre los productos."
+                
+            # Detectar si es una pregunta sobre precio
+            price_related = re.search(r'más barato|más económico|menor precio|barato|económico', query.lower()) is not None
             
-            # Extraer categoría del producto anterior
-            if 'categories' in prev_product:
-                categories = str(prev_product['categories']).split(',')
-                if categories:
-                    prev_category = categories[0].strip()
-            
-            # Buscar productos más baratos
-            results = self.search_products(
-                previous_results[0]['query'],  # Usar la consulta original
-                category=prev_category,
-                max_price=prev_price * 0.95,  # 5% más barato
-                top_k=5
-            )
-            
-            if results:
-                # Generar respuesta comparativa
-                response = self._generate_comparative_response(
-                    query=query,
-                    prev_product=prev_product,
-                    new_product=results[0]['product']
+            if price_related and previous_results and len(previous_results) > 0:
+                prev_product = previous_results[0].get('product')
+                if not prev_product:
+                    return [], "No encontré el producto anterior. ¿Podrías repetir tu pregunta inicial?"
+                
+                # Obtener precio y categoría del producto anterior
+                prev_price = float(prev_product['price'])
+                prev_category = None
+                if 'categories' in prev_product:
+                    categories = str(prev_product['categories']).split(',')
+                    if categories:
+                        prev_category = categories[0].strip()
+                
+                # Buscar productos más baratos
+                results = self.search_products(
+                    query=previous_results[0].get('query', query),  # Usar la consulta original o la actual
+                    category=prev_category,
+                    max_price=prev_price * 0.95,  # 5% más barato
+                    top_k=5
                 )
-                return results, response
-            else:
-                return [], f"Lo siento, no encontré productos más económicos que el {prev_product['name']} (${prev_price:,.2f})."
-        
-        # Búsqueda normal si no es comparativa o no hay contexto
-        results = self.search_products(query)
-        if not results:
-            return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles?"
-        
-        response = self._generate_response(query, results[0]['product'])
-        return results, response
+                
+                if results:
+                    # Generar respuesta comparativa
+                    response = self._generate_comparative_response(
+                        query=query,
+                        prev_product=prev_product,
+                        new_product=results[0]['product']
+                    )
+                    return results, response
+                else:
+                    return [], f"Lo siento, no encontré productos más económicos que el {prev_product['name']} (${prev_price:,.2f})."
+            
+            # Búsqueda normal si no es comparativa o no hay contexto
+            results = self.search_products(query)
+            if not results:
+                return [], "No encontré productos que coincidan con tu búsqueda. ¿Podrías darme más detalles?"
+            
+            response = self._generate_response(query, results[0]['product'])
+            return results, response
+            
+        except Exception as e:
+            logger.error(f"Error procesando consulta: {e}")
+            return [], "Lo siento, ocurrió un error. ¿Podrías reformular tu pregunta?"
+
 
     def _generate_response(self, query: str, product: Dict) -> str:
         """Genera una respuesta para un producto."""
@@ -168,24 +197,24 @@ class ProductAssistant:
 
     def _generate_comparative_response(self, query: str, prev_product: Dict, new_product: Dict) -> str:
         """Genera una respuesta comparativa entre productos."""
-        savings = float(prev_product['price']) - float(new_product['price'])
-        
-        prompt = f"""
-        Como experto en ventas, compara estos productos respondiendo a: {query}
-
-        Producto anterior:
-        Nombre: {prev_product['name']}
-        Precio: ${float(prev_product['price']):,.2f}
-
-        Producto nuevo (más económico):
-        Nombre: {new_product['name']}
-        Precio: ${float(new_product['price']):,.2f}
-        Ahorro: ${savings:,.2f}
-
-        Características nuevo producto: {new_product.get('additional_attributes', '')}
-        """
-
         try:
+            savings = float(prev_product['price']) - float(new_product['price'])
+            
+            prompt = f"""
+            Como experto en ventas, compara estos productos respondiendo a: {query}
+
+            Producto anterior:
+            Nombre: {prev_product['name']}
+            Precio: ${float(prev_product['price']):,.2f}
+            Características: {prev_product.get('additional_attributes', '')}
+
+            Producto nuevo (más económico):
+            Nombre: {new_product['name']}
+            Precio: ${float(new_product['price']):,.2f}
+            Ahorro: ${savings:,.2f}
+            Características: {new_product.get('additional_attributes', '')}
+            """
+
             response = self.client.chat.completions.create(
                 model="chatgpt-4o-latest",
                 messages=[
@@ -196,7 +225,7 @@ class ProductAssistant:
             )
             return response.choices[0].message.content
         except Exception as e:
-            logger.error(f"Error en GPT: {e}")
+            logger.error(f"Error generando respuesta comparativa: {e}")
             return f"He encontrado el {new_product['name']} a ${float(new_product['price']):,.2f}, " \
                    f"que te permite ahorrar ${savings:,.2f} comparado con la opción anterior."
 
