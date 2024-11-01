@@ -8,10 +8,6 @@ from typing import Dict, List
 import numpy as np
 import re
 import logging
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import threading
-import time
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
@@ -130,7 +126,7 @@ except Exception as e:
 # -------------------------------
 
 @st.cache_resource(show_spinner=False)
-def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2', nlist: int = 100) -> (np.ndarray, faiss.Index):
+def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2', nlist: int = 10) -> (np.ndarray, faiss.Index):
     """
     Genera embeddings para los productos y configura el índice FAISS IVFFlat para mayor escalabilidad.
     """
@@ -147,7 +143,7 @@ def generate_embeddings_faiss_ivf(df: pd.DataFrame, model_name: str = 'all-MiniL
     quantizer = faiss.IndexFlatIP(dimension)  # Cuantizador para el índice IVFFlat
     index = faiss.IndexIVFFlat(quantizer, dimension, nlist, faiss.METRIC_INNER_PRODUCT)
     
-    # Entrenar el índice con un subconjunto de embeddings
+    # Entrenar el índice con todos los embeddings (dado que el conjunto es pequeño)
     if not index.is_trained:
         index.train(embeddings)
     
@@ -164,33 +160,7 @@ except Exception as e:
     st.stop()
 
 # -------------------------------
-# 5. Implementación del Monitoreo de Cambios en el CSV
-# -------------------------------
-
-class CSVChangeHandler(FileSystemEventHandler):
-    def __init__(self, file_path):
-        self.file_path = file_path
-    
-    def on_modified(self, event):
-        if event.src_path.endswith(self.file_path):
-            logger.info(f"Archivo {self.file_path} modificado.")
-            st.session_state['file_changed'] = True
-
-def start_file_watcher(file_path: str):
-    event_handler = CSVChangeHandler(file_path)
-    observer = Observer()
-    observer.schedule(event_handler, path='.', recursive=False)
-    observer.start()
-    logger.info("Watcher iniciado.")
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
-
-# -------------------------------
-# 6. Funciones de Búsqueda y Coincidencia
+# 5. Funciones de Búsqueda y Coincidencia
 # -------------------------------
 
 def extract_search_terms(user_query: str) -> List[str]:
@@ -295,3 +265,99 @@ def generate_product_response(product_info: Dict[str, str]) -> str:
     response = call_gpt4o(prompt, max_tokens=500)
     
     return response
+
+# -------------------------------
+# 6. Interfaz Principal con Soporte de Follow-Up
+# -------------------------------
+
+# Inicializar historial de conversación y contexto del producto
+if 'conversation' not in st.session_state:
+    st.session_state['conversation'] = []
+if 'current_product' not in st.session_state:
+    st.session_state['current_product'] = None  # Producto actual para preguntas de seguimiento
+
+# Entrada del usuario
+st.write("👋 ¡Hola! Soy tu asistente de productos. ¿En qué puedo ayudarte?")
+user_question = st.text_input("Escribe tu pregunta aquí:", key="user_input")
+
+# Botón para enviar la pregunta
+if st.button("Enviar Pregunta"):
+    if not user_question.strip():
+        st.warning("Por favor, ingresa una pregunta.")
+    else:
+        with st.spinner("Buscando la mejor respuesta..."):
+            # Extraer términos de búsqueda
+            search_terms = extract_search_terms(user_question)
+            st.write(f"🔍 **Términos de Búsqueda:** {', '.join(search_terms)}")  # Mostrar términos extraídos
+            
+            # Reconstruir la consulta sin stop words para generar una búsqueda más efectiva
+            reconstructed_query = ' '.join(search_terms)
+            
+            # Cargar el modelo para generar embeddings de la consulta
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            
+            # Buscar productos relevantes usando FAISS
+            matches = search_products_faiss(reconstructed_query, model, faiss_index, product_data, top_k=5)
+            
+            if matches:
+                # Usar el producto más relevante para generar la respuesta
+                best_match = matches[0]['product']
+                
+                # Verificar si esta es una pregunta de seguimiento
+                if st.session_state['current_product'] and "más" in user_question.lower():
+                    # Utilizar el mismo producto para la pregunta de seguimiento
+                    response = generate_product_response(st.session_state['current_product'])
+                else:
+                    # Actualizar el producto actual en el estado de sesión
+                    st.session_state['current_product'] = best_match
+                    response = generate_product_response(best_match)
+                
+                # Agregar al historial
+                st.session_state['conversation'].append({
+                    "question": user_question,
+                    "response": response,
+                    "product": best_match['name']
+                })
+                
+                # Mostrar la respuesta utilizando Markdown para un mejor formato
+                st.markdown(response)
+                
+                # Mostrar productos alternativos
+                if len(matches) > 1:
+                    st.write("📌 **También podrían interesarte estos productos:**")
+                    for match in matches[1:]:
+                        product = match['product']
+                        # Formatear el precio
+                        try:
+                            price = float(product.get('price', 0.0))
+                            price_formatted = f"${price:,.2f}"
+                        except:
+                            price_formatted = "Información no disponible"
+                        # URL del producto
+                        url_key = product.get('url_key', '#')
+                        product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
+                        st.write(f"- [{product['name']}]({product_url}) - {price_formatted}")
+            else:
+                response = "Lo siento, no encontré productos que coincidan con tu consulta. ¿Podrías reformular tu pregunta?"
+                st.session_state['conversation'].append({
+                    "question": user_question,
+                    "response": response,
+                    "product": None
+                })
+                st.markdown(f"**Respuesta:** {response}")
+
+# Mostrar historial de conversación
+if st.session_state['conversation']:
+    st.write("### Historial de Conversación")
+    for i, entry in enumerate(reversed(st.session_state['conversation']), 1):
+        st.write(f"**Pregunta {i}:** {entry['question']}")
+        st.markdown(f"**Respuesta {i}:** {entry['response']}")
+        if entry['product']:
+            st.write(f"*Producto relacionado: {entry['product']}*")
+        st.markdown("---")
+
+# Botón para limpiar historial y resetear producto actual
+if st.button("Limpiar Historial"):
+    st.session_state['conversation'] = []
+    st.session_state['current_product'] = None
+    st.experimental_rerun()
