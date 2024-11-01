@@ -9,7 +9,7 @@ import logging
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-from openai import OpenAI
+import openai  # Corregido
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +21,7 @@ nltk.download('stopwords')
 class ProductAssistant:
     def __init__(self, api_key: str):
         """Inicializa el asistente de productos."""
-        self.client = OpenAI(api_key=api_key)
+        openai.api_key = api_key  # Corregido
         self.categories = {}
         self.product_data = None
         self.embeddings = None
@@ -30,6 +30,20 @@ class ProductAssistant:
         
     def load_data(self, df: pd.DataFrame):
         """Carga y procesa los datos de productos."""
+        # Verificar columnas necesarias
+        required_columns = ['name', 'description', 'short_description', 'price', 'categories']
+        for col in required_columns:
+            if col not in df.columns:
+                logger.error(f"Falta la columna requerida: {col}")
+                raise ValueError(f"Falta la columna requerida: {col}")
+        
+        # Manejar valores faltantes
+        df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
+        df['categories'] = df['categories'].fillna('Default Category')
+        df['name'] = df['name'].fillna('Nombre Desconocido')
+        df['description'] = df['description'].fillna('')
+        df['short_description'] = df['short_description'].fillna('')
+        
         self.product_data = df
         self._extract_categories()
         self._generate_embeddings()
@@ -85,8 +99,11 @@ class ProductAssistant:
                 logger.warning("No hay productos que cumplan con los filtros")
                 return []
             
+            logger.info(f"Number of products after filtering: {len(filtered_df)}")
+            
             # Generar embedding para la consulta
-            query_embedding = self.model.encode([query], normalize_embeddings=True)
+            query_embedding = self.model.encode([query], show_progress_bar=False)
+            faiss.normalize_L2(query_embedding)
             
             # Generar embeddings para los productos filtrados
             texts = []
@@ -108,12 +125,12 @@ class ProductAssistant:
             
             # Crear índice temporal
             temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
+            temp_index.add(filtered_embeddings)
+            
+            logger.info(f"Performing FAISS search with top_k={top_k}")
             
             results = []
             if len(filtered_embeddings) > 0:
-                temp_index.add(filtered_embeddings)
-                
-                # Ajustar k al número de resultados disponibles
                 k = min(top_k, len(filtered_df))
                 if k == 0:
                     return []
@@ -121,10 +138,14 @@ class ProductAssistant:
                 # Realizar búsqueda
                 D, I = temp_index.search(query_embedding, k)
                 
+                logger.info(f"FAISS returned distances: {D}")
+                logger.info(f"FAISS returned indices: {I}")
+                
                 # Verificar que tenemos resultados válidos
                 if len(D) > 0 and len(D[0]) > 0:
                     for distance, idx in zip(D[0], I[0]):
-                        if 0 <= idx < len(filtered_df):  # Verificar que el índice es válido
+                        logger.debug(f"Processing index: {idx} with distance: {distance}")
+                        if 0 <= idx < len(filtered_df):
                             try:
                                 product = filtered_df.iloc[idx].to_dict()
                                 price = pd.to_numeric(product['price'], errors='coerce')
@@ -134,9 +155,16 @@ class ProductAssistant:
                                         'score': float(distance),
                                         'query': query
                                     })
+                                else:
+                                    logger.warning(f"Producto con índice {idx} tiene un precio inválido.")
+                            except IndexError as ie:
+                                logger.error(f"IndexError al acceder a iloc[{idx}]: {ie}")
+                                continue
                             except Exception as e:
                                 logger.error(f"Error procesando producto {idx}: {e}")
                                 continue
+                        else:
+                            logger.error(f"Índice FAISS {idx} está fuera de los límites del DataFrame filtrado.")
             
             return results
             
@@ -202,8 +230,8 @@ class ProductAssistant:
         except Exception as e:
             logger.error(f"Error procesando consulta: {e}")
             return [], "Lo siento, ocurrió un error. ¿Podrías reformular tu pregunta?"
-
-
+    
+    
     def _generate_response(self, query: str, product: Dict) -> str:
         """Genera una respuesta para un producto."""
         try:
@@ -219,9 +247,9 @@ class ProductAssistant:
             Características: {product.get('additional_attributes', '')}
             """
             
-            # Actualizado para usar el nuevo formato de la API de OpenAI
-            response = self.client.chat.completions.create(
-                model="gpt-4",  # Cambiado de chatgpt-4o-latest a gpt-4
+            # Usar OpenAI correctamente
+            response = openai.ChatCompletion.create(
+                model="chatgpt-4o-latest",  # Corregido
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos que ayuda a los clientes."},
                     {"role": "user", "content": prompt}
@@ -232,8 +260,8 @@ class ProductAssistant:
         except Exception as e:
             logger.error(f"Error en GPT: {e}")
             return f"Te recomiendo el {product['name']} que cuesta ${float(product['price']):,.2f}."
-
-
+    
+    
     def _generate_comparative_response(self, query: str, prev_product: Dict, new_product: Dict) -> str:
         """Genera una respuesta comparativa entre productos."""
         try:
@@ -254,8 +282,8 @@ class ProductAssistant:
             Características: {new_product.get('additional_attributes', '')}
             """
 
-            response = self.client.chat.completions.create(
-                model="chatgpt-4o-latest",
+            response = openai.ChatCompletion.create(
+                model="chatgpt-4o-latest",  # Corregido
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos especializado en encontrar las mejores ofertas."},
                     {"role": "user", "content": prompt}
@@ -280,11 +308,16 @@ def main():
     # Inicializar estado
     if 'assistant' not in st.session_state:
         assistant = ProductAssistant(st.secrets["OPENAI_API_KEY"])
-        product_data = pd.read_csv('data/jose.csv')
-        assistant.load_data(product_data)
-        st.session_state['assistant'] = assistant
-        st.session_state['previous_results'] = None
-        st.session_state['conversation_history'] = []
+        try:
+            product_data = pd.read_csv('data/jose.csv')
+            assistant.load_data(product_data)
+            st.session_state['assistant'] = assistant
+            st.session_state['previous_results'] = None
+            st.session_state['conversation_history'] = []
+            logger.info("Datos de productos cargados exitosamente.")
+        except Exception as e:
+            logger.error(f"Error cargando datos de productos: {e}")
+            st.error("Hubo un error al cargar los datos de productos. Por favor, revisa los logs.")
 
     # Input del usuario
     user_question = st.text_input("¿En qué puedo ayudarte?")
@@ -294,7 +327,7 @@ def main():
             # Procesar consulta con contexto
             results, response = st.session_state['assistant'].process_query_with_context(
                 user_question,
-                st.session_state['previous_results']
+                st.session_state.get('previous_results')
             )
             
             # Actualizar contexto
@@ -322,7 +355,7 @@ def main():
                     """)
     
     # Mostrar historial
-    if st.session_state['conversation_history']:
+    if st.session_state.get('conversation_history'):
         st.markdown("---\n### 📝 Historial de Conversación")
         for i, entry in enumerate(reversed(st.session_state['conversation_history'])):
             with st.expander(f"Conversación {len(st.session_state['conversation_history'])-i}"):
