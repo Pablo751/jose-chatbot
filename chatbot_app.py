@@ -209,8 +209,9 @@ class ProductAssistant:
             return []
     
     def process_query_with_context(self, 
-                                 query: str, 
-                                 previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
+                                   query: str, 
+                                   previous_results: Optional[List[Dict]] = None) -> Tuple[List[Dict], str]:
+
         """Procesa la consulta considerando el contexto y presupuesto."""
         try:
             if not query.strip():
