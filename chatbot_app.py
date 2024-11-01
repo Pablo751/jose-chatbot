@@ -9,7 +9,7 @@ import logging
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-import openai  # Asegúrate de tener la biblioteca OpenAI instalada
+from openai import OpenAI
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
