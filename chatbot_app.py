@@ -2,7 +2,7 @@
 
 import streamlit as st
 import pandas as pd
-from openai import OpenAI 
+from openai import OpenAI  
 from typing import Optional, Dict, List
 import numpy as np
 from difflib import get_close_matches
@@ -11,7 +11,9 @@ from difflib import get_close_matches
 # 1. Configurar el Cliente OpenAI
 # -------------------------------
 
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+client = OpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"]
+)
 
 # -------------------------------
 # 2. Configuración de la Aplicación Streamlit
