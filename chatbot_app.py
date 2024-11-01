@@ -2,7 +2,7 @@
 
 import streamlit as st
 import pandas as pd
-import openai
+from openai import OpenAI 
 from typing import Optional, Dict, List
 import numpy as np
 from difflib import get_close_matches
@@ -153,7 +153,7 @@ def load_product_data(file_path: str) -> pd.DataFrame:
 
 # Cargar datos
 try:
-    product_data = load_product_data('jose.csv')
+    product_data = load_product_data('data/jose.csv')
     st.sidebar.success("✅ Catálogo de productos cargado correctamente")
 except Exception as e:
     st.error(f"Error al cargar el catálogo de productos: {e}")
