@@ -9,7 +9,7 @@ import logging
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-import openai  # Corregido
+import openai  # Asegúrate de tener la biblioteca OpenAI instalada
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -21,64 +21,81 @@ nltk.download('stopwords')
 class ProductAssistant:
     def __init__(self, api_key: str):
         """Inicializa el asistente de productos."""
-        openai.api_key = api_key  # Corregido
-        self.categories = {}
-        self.product_data = None
-        self.embeddings = None
-        self.faiss_index = None
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
-        
+        try:
+            openai.api_key = api_key  # Asegúrate de que la clave API es correcta
+            self.categories = {}
+            self.product_data = None
+            self.embeddings = None
+            self.faiss_index = None
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("Modelo SentenceTransformer cargado correctamente.")
+        except Exception as e:
+            logger.error(f"Error al inicializar SentenceTransformer: {e}")
+            raise e
+            
     def load_data(self, df: pd.DataFrame):
         """Carga y procesa los datos de productos."""
-        # Verificar columnas necesarias
-        required_columns = ['name', 'description', 'short_description', 'price', 'categories']
-        for col in required_columns:
-            if col not in df.columns:
-                logger.error(f"Falta la columna requerida: {col}")
-                raise ValueError(f"Falta la columna requerida: {col}")
-        
-        # Manejar valores faltantes y tipos de datos
-        df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
-        df['categories'] = df['categories'].fillna('Default Category')
-        df['name'] = df['name'].fillna('Nombre Desconocido')
-        df['description'] = df['description'].fillna('')
-        df['short_description'] = df['short_description'].fillna('')
-        
-        self.product_data = df
-        self._extract_categories()
-        self._generate_embeddings()
-        logger.info("Embeddings generados y FAISS índice creado.")
-        
+        try:
+            # Verificar columnas necesarias
+            required_columns = ['name', 'description', 'short_description', 'price', 'categories']
+            for col in required_columns:
+                if col not in df.columns:
+                    logger.error(f"Falta la columna requerida: {col}")
+                    raise ValueError(f"Falta la columna requerida: {col}")
+            
+            # Manejar valores faltantes y tipos de datos
+            df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
+            df['categories'] = df['categories'].fillna('Default Category')
+            df['name'] = df['name'].fillna('Nombre Desconocido')
+            df['description'] = df['description'].fillna('')
+            df['short_description'] = df['short_description'].fillna('')
+            
+            self.product_data = df
+            logger.info("Datos de productos cargados y procesados.")
+            self._extract_categories()
+            self._generate_embeddings()
+            logger.info("Embeddings generados y FAISS índice creado.")
+        except Exception as e:
+            logger.error(f"Error al cargar datos: {e}")
+            raise e
+            
     def _extract_categories(self):
         """Extrae y simplifica las categorías."""
-        main_categories = set()
-        for _, row in self.product_data.iterrows():
-            categories = str(row['categories']).split(',')
-            for category in categories:
-                parts = category.strip().split('/')
-                # Tomar solo la categoría principal después de "Default Category"
-                for i, part in enumerate(parts):
-                    if part.strip() == "Default Category" and i + 1 < len(parts):
-                        main_categories.add(parts[i + 1].strip())
-        
-        # Organizar en diccionario
-        self.categories = {cat: {} for cat in main_categories}
-        logger.info(f"Categorías extraídas: {list(self.categories.keys())}")
+        try:
+            main_categories = set()
+            for _, row in self.product_data.iterrows():
+                categories = str(row['categories']).split(',')
+                for category in categories:
+                    parts = category.strip().split('/')
+                    # Tomar solo la categoría principal después de "Default Category"
+                    for i, part in enumerate(parts):
+                        if part.strip() == "Default Category" and i + 1 < len(parts):
+                            main_categories.add(parts[i + 1].strip())
+            # Organizar en diccionario
+            self.categories = {cat: {} for cat in main_categories}
+            logger.info(f"Categorías extraídas: {list(self.categories.keys())}")
+        except Exception as e:
+            logger.error(f"Error al extraer categorías: {e}")
+            raise e
     
     def _generate_embeddings(self):
         """Genera embeddings para los productos."""
-        texts = (self.product_data['name'] + " " + 
-                self.product_data['description'] + " " + 
-                self.product_data['short_description'])
-        self.embeddings = self.model.encode(texts.tolist(), show_progress_bar=True)
-        faiss.normalize_L2(self.embeddings)
-        logger.info("Embeddings normalizados.")
-        
-        dimension = self.embeddings.shape[1]
-        self.faiss_index = faiss.IndexFlatIP(dimension)
-        self.faiss_index.add(self.embeddings)
-        logger.info(f"FAISS índice creado con dimensión: {dimension} y {self.embeddings.shape[0]} embeddings.")
-    
+        try:
+            texts = (self.product_data['name'] + " " + 
+                    self.product_data['description'] + " " + 
+                    self.product_data['short_description'])
+            self.embeddings = self.model.encode(texts.tolist(), show_progress_bar=True)
+            faiss.normalize_L2(self.embeddings)
+            logger.info("Embeddings normalizados.")
+            
+            dimension = self.embeddings.shape[1]
+            self.faiss_index = faiss.IndexFlatIP(dimension)
+            self.faiss_index.add(self.embeddings)
+            logger.info(f"FAISS índice creado con dimensión: {dimension} y {self.embeddings.shape[0]} embeddings.")
+        except Exception as e:
+            logger.error(f"Error al generar embeddings: {e}")
+            raise e
+
     def search_products(self, 
                        query: str, 
                        category: Optional[str] = None, 
@@ -191,7 +208,7 @@ class ProductAssistant:
             
             logger.info(f"Número de productos encontrados: {len(results)}")
             return results
-            
+                
         except Exception as e:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
@@ -298,19 +315,19 @@ class ProductAssistant:
             
             prompt = f"""
             Como experto en ventas, compara estos productos respondiendo a: {query}
-
+    
             Producto anterior:
             Nombre: {prev_product['name']}
             Precio: ${float(prev_product['price']):,.2f}
             Características: {prev_product.get('additional_attributes', '')}
-
+    
             Producto nuevo (más económico):
             Nombre: {new_product['name']}
             Precio: ${float(new_product['price']):,.2f}
             Ahorro: ${savings:,.2f}
             Características: {new_product.get('additional_attributes', '')}
             """
-
+    
             response = openai.ChatCompletion.create(
                 model="chatgpt-4o-latest",  # Mantener según solicitud del usuario
                 messages=[
@@ -341,65 +358,70 @@ def main():
     
     # Inicializar estado
     if 'assistant' not in st.session_state:
-        assistant = ProductAssistant(st.secrets["OPENAI_API_KEY"])
         try:
-            product_data = pd.read_csv('data/jose.csv')
-            assistant.load_data(product_data)
-            st.session_state['assistant'] = assistant
-            st.session_state['previous_results'] = None
-            st.session_state['conversation_history'] = []
-            logger.info("Datos de productos cargados exitosamente.")
+            with st.spinner("Cargando datos de productos..."):
+                assistant = ProductAssistant(st.secrets["OPENAI_API_KEY"])
+                product_data = pd.read_csv('data/jose.csv')
+                assistant.load_data(product_data)
+                st.session_state['assistant'] = assistant
+                st.session_state['previous_results'] = None
+                st.session_state['conversation_history'] = []
+                logger.info("Datos de productos cargados exitosamente.")
         except Exception as e:
-            logger.error(f"Error cargando datos de productos: {e}")
-            st.error("Hubo un error al cargar los datos de productos. Por favor, revisa los logs.")
+            logger.error(f"Error al inicializar el asistente: {e}")
+            st.error(f"Hubo un error al inicializar el asistente: {e}")
     
     # Input del usuario
     user_question = st.text_input("¿En qué puedo ayudarte?")
     
     if st.button("Enviar"):
         if user_question:
-            # Procesar consulta con contexto
-            results, response = st.session_state['assistant'].process_query_with_context(
-                user_question,
-                st.session_state.get('previous_results')
-            )
-            
-            # Actualizar contexto
-            st.session_state['previous_results'] = results
-            
-            # Guardar en historial
-            st.session_state['conversation_history'].append({
-                'question': user_question,
-                'response': response,
-                'results': results
-            })
-            
-            # Mostrar respuesta
-            st.markdown("### 🤖 Respuesta:")
-            st.write(response)
-            
-            if results:
-                st.markdown("### 📦 Productos encontrados:")
-                for result in results:
-                    product = result['product']
-                    st.markdown(f"""
-                    **{product['name']}**
-                    - 💰 Precio: ${float(product['price']):,.2f}
-                    - 📑 Categoría: {product.get('categories', '').split(',')[0]}
-                    """)
-            
-            # Si el modo de depuración está habilitado, mostrar información adicional
-            if debug_mode:
-                st.markdown("### 🐞 Información de Depuración:")
-                st.write("**Consulta:**", user_question)
-                st.write("**Resultados obtenidos:**", results)
+            try:
+                # Procesar consulta con contexto
+                results, response = st.session_state['assistant'].process_query_with_context(
+                    user_question,
+                    st.session_state.get('previous_results')
+                )
+                
+                # Actualizar contexto
+                st.session_state['previous_results'] = results
+                
+                # Guardar en historial
+                st.session_state['conversation_history'].append({
+                    'question': user_question,
+                    'response': response,
+                    'results': results
+                })
+                
+                # Mostrar respuesta
+                st.markdown("### 🤖 Respuesta:")
+                st.write(response)
+                
                 if results:
-                    st.write("**Detalles de los productos encontrados:**")
-                    for i, result in enumerate(results, 1):
-                        st.write(f"**Producto {i}:**")
-                        st.json(result['product'])
-                        st.write(f"**Score:** {result['score']}")
-                        st.write(f"**Consulta Usada:** {result['query']}")
+                    st.markdown("### 📦 Productos encontrados:")
+                    for result in results:
+                        product = result['product']
+                        st.markdown(f"""
+                        **{product['name']}**
+                        - 💰 Precio: ${float(product['price']):,.2f}
+                        - 📑 Categoría: {product.get('categories', '').split(',')[0]}
+                        """)
+                
+                # Si el modo de depuración está habilitado, mostrar información adicional
+                if debug_mode:
+                    st.markdown("### 🐞 Información de Depuración:")
+                    st.write("**Consulta:**", user_question)
+                    st.write("**Resultados obtenidos:**", results)
+                    if results:
+                        st.write("**Detalles de los productos encontrados:**")
+                        for i, result in enumerate(results, 1):
+                            st.write(f"**Producto {i}:**")
+                            st.json(result['product'])
+                            st.write(f"**Score:** {result['score']}")
+                            st.write(f"**Consulta Usada:** {result['query']}")
+            except Exception as e:
+                logger.error(f"Error al procesar la consulta: {e}")
+                st.error(f"Hubo un error al procesar tu consulta: {e}")
     
     # Mostrar historial
     if st.session_state.get('conversation_history'):
@@ -410,3 +432,7 @@ def main():
                 st.markdown(f"**🤖 Respuesta:** {entry['response']}")
                 if debug_mode:
                     st.write("**Resultados:**", entry['results'])
+
+
+if __name__ == "__main__":
+    main()
