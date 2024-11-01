@@ -62,6 +62,7 @@ class ProductAssistant:
         self.faiss_index.add(self.embeddings)
 
     def search_products(self, 
+    def search_products(self, 
                        query: str, 
                        category: Optional[str] = None, 
                        max_price: Optional[float] = None,
@@ -71,50 +72,72 @@ class ProductAssistant:
             # Crear una copia del DataFrame para no modificar el original
             filtered_df = self.product_data.copy()
             
-            # Aplicar filtros
+            # Aplicar filtros y validar que haya datos
             if category:
                 category_mask = filtered_df['categories'].str.contains(category, na=False, regex=False)
                 filtered_df = filtered_df[category_mask].reset_index(drop=True)
             if max_price:
-                price_mask = filtered_df['price'].astype(float) < max_price
+                filtered_df['price'] = pd.to_numeric(filtered_df['price'], errors='coerce')
+                price_mask = filtered_df['price'] < max_price
                 filtered_df = filtered_df[price_mask].reset_index(drop=True)
             
+            # Verificar si hay resultados después del filtrado
             if filtered_df.empty:
+                logger.warning("No hay productos que cumplan con los filtros")
                 return []
             
             # Generar embedding para la consulta
             query_embedding = self.model.encode([query], normalize_embeddings=True)
             
-            # Generar embeddings solo para los productos filtrados
-            texts = (filtered_df['name'] + " " + 
-                    filtered_df['description'].fillna('') + " " + 
-                    filtered_df['short_description'].fillna(''))
-            filtered_embeddings = self.model.encode(texts.tolist(), show_progress_bar=False)
+            # Generar embeddings para los productos filtrados
+            texts = []
+            for _, row in filtered_df.iterrows():
+                text = f"{row['name']} "
+                if pd.notna(row.get('description')):
+                    text += f"{row['description']} "
+                if pd.notna(row.get('short_description')):
+                    text += f"{row['short_description']}"
+                texts.append(text.strip())
+            
+            # Verificar si hay textos para procesar
+            if not texts:
+                logger.warning("No hay textos para procesar")
+                return []
+                
+            filtered_embeddings = self.model.encode(texts, show_progress_bar=False)
             faiss.normalize_L2(filtered_embeddings)
             
-            # Crear un índice temporal para los productos filtrados
+            # Crear índice temporal
             temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
+            
+            results = []
             if len(filtered_embeddings) > 0:
                 temp_index.add(filtered_embeddings)
                 
-                # Realizar la búsqueda
+                # Ajustar k al número de resultados disponibles
                 k = min(top_k, len(filtered_df))
+                if k == 0:
+                    return []
+                    
+                # Realizar búsqueda
                 D, I = temp_index.search(query_embedding, k)
                 
-                results = []
-                for distance, idx in zip(D[0], I[0]):
-                    if idx < len(filtered_df):  # Verificar índice válido
-                        product = filtered_df.iloc[idx].to_dict()
-                        try:
-                            price = float(product['price'])
-                            if price > 0:  # Solo incluir productos con precio válido
-                                results.append({
-                                    'product': product,
-                                    'score': float(distance),
-                                    'query': query
-                                })
-                        except (ValueError, TypeError):
-                            continue
+                # Verificar que tenemos resultados válidos
+                if len(D) > 0 and len(D[0]) > 0:
+                    for distance, idx in zip(D[0], I[0]):
+                        if 0 <= idx < len(filtered_df):  # Verificar que el índice es válido
+                            try:
+                                product = filtered_df.iloc[idx].to_dict()
+                                price = pd.to_numeric(product['price'], errors='coerce')
+                                if pd.notna(price) and price > 0:
+                                    results.append({
+                                        'product': product,
+                                        'score': float(distance),
+                                        'query': query
+                                    })
+                            except Exception as e:
+                                logger.error(f"Error procesando producto {idx}: {e}")
+                                continue
             
             return results
             
