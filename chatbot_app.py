@@ -71,13 +71,13 @@ class ProductAssistant:
             # Crear una copia del DataFrame para no modificar el original
             filtered_df = self.product_data.copy()
             
-            # Aplicar filtros y mantener un registro de los índices originales
+            # Aplicar filtros
             if category:
-                category_mask = filtered_df['categories'].str.contains(category, na=False)
-                filtered_df = filtered_df[category_mask]
+                category_mask = filtered_df['categories'].str.contains(category, na=False, regex=False)
+                filtered_df = filtered_df[category_mask].reset_index(drop=True)
             if max_price:
-                price_mask = filtered_df['price'] < max_price
-                filtered_df = filtered_df[price_mask]
+                price_mask = filtered_df['price'].astype(float) < max_price
+                filtered_df = filtered_df[price_mask].reset_index(drop=True)
             
             if filtered_df.empty:
                 return []
@@ -85,10 +85,10 @@ class ProductAssistant:
             # Generar embedding para la consulta
             query_embedding = self.model.encode([query], normalize_embeddings=True)
             
-            # Crear embeddings solo para los productos filtrados
+            # Generar embeddings solo para los productos filtrados
             texts = (filtered_df['name'] + " " + 
-                    filtered_df['description'] + " " + 
-                    filtered_df['short_description'])
+                    filtered_df['description'].fillna('') + " " + 
+                    filtered_df['short_description'].fillna(''))
             filtered_embeddings = self.model.encode(texts.tolist(), show_progress_bar=False)
             faiss.normalize_L2(filtered_embeddings)
             
@@ -96,30 +96,28 @@ class ProductAssistant:
             temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
             if len(filtered_embeddings) > 0:
                 temp_index.add(filtered_embeddings)
-            
-            # Realizar la búsqueda
-            k = min(top_k, len(filtered_df))
-            if k == 0:
-                return []
                 
-            D, I = temp_index.search(query_embedding, k)
-            
-            results = []
-            for distance, idx in zip(D[0], I[0]):
-                if distance > 0 and idx < len(filtered_df):  # Verificar índice válido
-                    product = filtered_df.iloc[idx].to_dict()
-                    if float(product['price']) > 0:  # Solo incluir productos con precio válido
-                        results.append({
-                            'product': product,
-                            'score': float(distance),
-                            'query': query
-                        })
-            
-            # Ordenar por precio si se especificó un máximo
-            if max_price:
-                results.sort(key=lambda x: float(x['product']['price']))
+                # Realizar la búsqueda
+                k = min(top_k, len(filtered_df))
+                D, I = temp_index.search(query_embedding, k)
+                
+                results = []
+                for distance, idx in zip(D[0], I[0]):
+                    if idx < len(filtered_df):  # Verificar índice válido
+                        product = filtered_df.iloc[idx].to_dict()
+                        try:
+                            price = float(product['price'])
+                            if price > 0:  # Solo incluir productos con precio válido
+                                results.append({
+                                    'product': product,
+                                    'score': float(distance),
+                                    'query': query
+                                })
+                        except (ValueError, TypeError):
+                            continue
             
             return results
+            
         except Exception as e:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
