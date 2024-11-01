@@ -15,7 +15,7 @@ import time
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-import openai
+from openai import OpenAI  # Actualización según la nueva API
 import os
 
 # -------------------------------
@@ -43,15 +43,15 @@ st.title("💬 Asistente de Productos")
 # -------------------------------
 # 2. Configurar el Cliente de OpenAI
 # -------------------------------
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
     """
     Llama a la API de OpenAI GPT-4o para generar una respuesta basada en el prompt.
     """
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
+        response = client.chat.completions.create(
+            model="gpt-4",  # Asegúrate de usar el nombre correcto del modelo
             messages=[
                 {"role": "system", "content": """
                 Eres un asistente de ventas que ayuda a los clientes a encontrar productos en nuestra tienda.
