@@ -15,7 +15,7 @@ import time
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-from openai import OpenAI
+import openai
 import os
 
 # -------------------------------
@@ -43,14 +43,14 @@ st.title("💬 Asistente de Productos")
 # -------------------------------
 # 2. Configurar el Cliente de OpenAI
 # -------------------------------
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
     """
     Llama a la API de OpenAI GPT-4o para generar una respuesta basada en el prompt.
     """
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
                 {"role": "system", "content": """
@@ -193,7 +193,7 @@ class CSVChangeHandler(FileSystemEventHandler):
 def start_file_watcher(file_path: str):
     event_handler = CSVChangeHandler(file_path)
     observer = Observer()
-    observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(file_path)) or '.', recursive=False)
+    observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(file_path)), recursive=False)
     observer.start()
     logger.info("Watcher iniciado.")
     try:
@@ -219,7 +219,7 @@ def extract_search_terms(user_query: str) -> List[str]:
     # Tokenizar
     terms = user_query.split()
     # Filtrar palabras irrelevantes usando NLTK
-    stop_words = set(stopwords.words('spanish')).union({'puedes', 'recomendar', 'economico', 'económico', 'por', 'que', 'puedo', 'tienes', 'tenes'})
+    stop_words = set(stopwords.words('spanish')).union({'puedes', 'recomendar', 'economico', 'económico', 'por', 'que', 'puedo', 'tienes', 'tenes', 'uno', 'mas', 'más', 'porfa'})
     filtered_terms = [term for term in terms if term not in stop_words]
     # Lematización
     stemmer = SnowballStemmer('spanish')
@@ -232,12 +232,12 @@ def extract_price_filter(user_query: str, df: pd.DataFrame) -> Dict:
     Extrae el rango de precios solicitado por el usuario.
     """
     price_filter = {}
-    # Detectar frases como "más barato", "económico", o rangos específicos
-    if any(phrase in user_query.lower() for phrase in ["más barato", "económico", "economico"]):
+    # Detectar si el usuario solicita productos más baratos
+    if re.search(r'\bmás barato\b|\beconómico\b|\beconomico\b|\bbarato\b|\bmas barato\b|\bmas economico\b', user_query.lower()):
         # Definir un porcentaje de reducción, por ejemplo, 20% menos que el precio promedio
         avg_price = df['price'].mean()
         price_filter['max'] = avg_price * 0.8
-    # Aquí puedes agregar más lógica para detectar rangos específicos
+    # Aquí puedes agregar más lógica para rangos específicos si es necesario
     return price_filter
 
 def prioritize_by_price(matches: List[Dict], ascending: bool = True) -> List[Dict]:
@@ -274,39 +274,31 @@ def search_products_faiss(query: str, model: SentenceTransformer, index: faiss.I
             embeddings_filtered = model.encode(texts.tolist(), normalize_embeddings=True)
             faiss.normalize_L2(embeddings_filtered)
             
-            # Crear un índice temporal para los productos filtrados
-            dimension = embeddings_filtered.shape[1]
-            quantizer = faiss.IndexFlatIP(dimension)
-            temp_index = faiss.IndexIVFFlat(quantizer, dimension, 10, faiss.METRIC_INNER_PRODUCT)
-            if not temp_index.is_trained:
-                temp_index.train(embeddings_filtered)
+            # Crear un índice FAISS temporal para el filtrado
+            temp_index = faiss.IndexFlatIP(embeddings_filtered.shape[1])
             temp_index.add(embeddings_filtered)
             
             # Generar embedding para la consulta
             query_embedding = model.encode([query], normalize_embeddings=True)
-            
-            # Realizar búsqueda en el índice FAISS temporal
             D, I = temp_index.search(query_embedding, top_k)
-            
-            results = []
-            for distance, idx in zip(D[0], I[0]):
-                if distance > 0:  # Similaridad positiva
-                    product = filtered_df.iloc[idx].to_dict()
-                    results.append({'product': product, 'score': distance})
-            
-            logger.info(f"Productos encontrados con filtro de precio: {len(results)}")
-            return results
         else:
-            # Usar el índice principal
+            # Generar embedding para la consulta
             query_embedding = model.encode([query], normalize_embeddings=True)
+            # Realizar búsqueda en el índice FAISS
             D, I = index.search(query_embedding, top_k)
-            results = []
-            for distance, idx in zip(D[0], I[0]):
-                if distance > 0:  # Similaridad positiva
-                    product = df.iloc[idx].to_dict()
-                    results.append({'product': product, 'score': distance})
-            logger.info(f"Productos encontrados: {len(results)}")
-            return results
+        
+        results = []
+        for distance, idx in zip(D[0], I[0]):
+            if price_filter:
+                product = filtered_df.iloc[idx].to_dict()
+            else:
+                product = df.iloc[idx].to_dict()
+            
+            if distance > 0:  # Similaridad positiva
+                results.append({'product': product, 'score': distance})
+        
+        logger.info(f"Productos encontrados: {len(results)}")
+        return results
     except Exception as e:
         logger.error(f"Error durante la búsqueda de productos: {e}")
         st.error("Ocurrió un error durante la búsqueda de productos. Por favor, inténtalo de nuevo más tarde.")
@@ -352,14 +344,14 @@ def generate_product_response(product_info: Dict[str, str], price_filter: Dict =
     
     # URL del producto
     url_key = product_info.get('url_key', '#')
-    product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
+    product_url = f"https://tutienda.com/product/{url_key}"
     
     # Imagen del producto
     base_image = product_info.get('base_image', '')
     if base_image and isinstance(base_image, str):
-        image_url = f"https://tutienda.com/{base_image}"  # Reemplaza con la URL base de tus imágenes
+        image_url = f"https://tutienda.com/{base_image}"
     else:
-        image_url = "https://via.placeholder.com/150"  # Imagen por defecto
+        image_url = "https://via.placeholder.com/150"
     
     # Crear un resumen de la información del producto para el prompt
     product_summary = f"""
@@ -376,7 +368,7 @@ def generate_product_response(product_info: Dict[str, str], price_filter: Dict =
     if price_filter:
         min_price = price_filter.get('min', 'sin mínimo')
         max_price = price_filter.get('max', 'sin máximo')
-        price_instructions = f"El rango de precios solicitado es hasta {max_price}."
+        price_instructions = f"El rango de precios solicitado es hasta {max_price:,.2f}."
     else:
         price_instructions = "No hay restricciones de precio especificadas."
     
@@ -446,7 +438,7 @@ if 'file_changed' in st.session_state and st.session_state['file_changed']:
         product_data = load_product_data(product_file)
         if not validate_csv(product_data):
             st.stop()
-        faiss_index = generate_embeddings_faiss_ivf(product_data)[1]
+        embeddings, faiss_index = generate_embeddings_faiss_ivf(product_data)
         st.sidebar.success("✅ Catálogo de productos recargado correctamente")
         logger.info(f"Productos recargados: {len(product_data)}")
         st.session_state['file_changed'] = False
@@ -475,7 +467,7 @@ if st.button("Enviar Pregunta"):
             # Detectar si se solicita un filtro de precio
             price_filter = extract_price_filter(user_question, product_data)
             if price_filter:
-                st.write(f"💲 **Filtro de Precio Aplicado:** Hasta {price_filter.get('max', 'sin máximo')}")
+                st.write(f"💲 **Filtro de Precio Aplicado:** Hasta ${price_filter.get('max', 'sin máximo'):,.2f}")
             
             # Cargar el modelo para generar embeddings de la consulta
             model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -530,7 +522,7 @@ if st.button("Enviar Pregunta"):
                             price_formatted = "Información no disponible"
                         # URL del producto
                         url_key = product.get('url_key', '#')
-                        product_url = f"https://tutienda.com/product/{url_key}"  # Reemplaza con la URL base de tu tienda
+                        product_url = f"https://tutienda.com/product/{url_key}"
                         st.write(f"- [{product['name']}]({product_url}) - {price_formatted}")
                         
                         # Botones de feedback
