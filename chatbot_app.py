@@ -155,7 +155,7 @@ class ProductAssistant:
 
         try:
             response = self.client.chat.completions.create(
-                model="chatchatgpt-4o-latesto-latest",
+                model="chatgpt-4o-latest",
                 messages=[
                     {"role": "system", "content": "Eres un experto en productos eléctricos que ayuda a los clientes a encontrar la mejor opción."},
                     {"role": "user", "content": prompt}
