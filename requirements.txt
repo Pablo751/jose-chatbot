@@ -5,3 +5,5 @@ numpy==1.26.3
 python-dotenv==1.0.0
 fuzzywuzzy
 python-Levenshtein
+sentence-transformers
+faiss-cpu
