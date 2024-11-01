@@ -102,114 +102,108 @@ class ProductAssistant:
                        category: Optional[str] = None, 
                        max_price: Optional[float] = None,
                        top_k: int = 5) -> List[Dict]:
-        """Búsqueda mejorada de productos con manejo correcto de índices."""
+        """Búsqueda mejorada de productos con filtrado de campos relevantes."""
         try:
             # Crear una copia del DataFrame para no modificar el original
             filtered_df = self.product_data.copy()
             
             # Aplicar filtro por categoría si se proporciona
             if category:
+                # Simplificar categorías para mejor coincidencia
                 category_mask = filtered_df['categories'].str.contains(category, na=False, regex=False)
                 filtered_df = filtered_df[category_mask].reset_index(drop=True)
-                logger.info(f"Aplicado filtro de categoría: '{category}'. Productos restantes: {len(filtered_df)}")
-            else:
-                logger.info("No se aplicó filtro de categoría.")
+                logger.info(f"Filtro de categoría aplicado: '{category}'. Productos restantes: {len(filtered_df)}")
             
             # Aplicar filtro por precio si se proporciona
             if max_price is not None:
                 filtered_df['price'] = pd.to_numeric(filtered_df['price'], errors='coerce')
                 price_mask = filtered_df['price'] < max_price
                 filtered_df = filtered_df[price_mask].reset_index(drop=True)
-                logger.info(f"Aplicado filtro de precio: menor que {max_price}. Productos restantes: {len(filtered_df)}")
-            else:
-                logger.info("No se aplicó filtro de precio.")
+                logger.info(f"Filtro de precio aplicado: menor que {max_price}. Productos restantes: {len(filtered_df)}")
             
             # Verificar si hay resultados después del filtrado
             if filtered_df.empty:
                 logger.warning("No hay productos que cumplan con los filtros.")
                 return []
             
-            logger.info(f"Número de productos después del filtrado: {len(filtered_df)}")
-            
             # Generar embedding para la consulta
             query_embedding = self.model.encode([query], show_progress_bar=False)
             faiss.normalize_L2(query_embedding)
-            logger.debug(f"Embedding de la consulta: {query_embedding}")
             
-            # Generar textos para los productos filtrados
+            # Generar textos relevantes para los productos filtrados, excluyendo metadata
             texts = []
             for idx, row in filtered_df.iterrows():
-                text = f"{row['name']} "
-                if pd.notna(row.get('description')):
-                    text += f"{row['description']} "
+                # Solo incluir campos relevantes para la búsqueda
+                relevant_text = f"{row['name']} "
+                
+                # Agregar descripción corta si está disponible
                 if pd.notna(row.get('short_description')):
-                    text += f"{row['short_description']}"
-                texts.append(text.strip())
-            
-            logger.info(f"Número de textos a codificar: {len(texts)}")
-            
-            # Verificar si hay textos para procesar
-            if not texts:
-                logger.warning("No hay textos para procesar después de generar los textos.")
-                return []
+                    relevant_text += f"{row['short_description']} "
+                
+                # Agregar atributos adicionales relevantes
+                if pd.notna(row.get('additional_attributes')):
+                    attrs = row['additional_attributes']
+                    # Extraer solo características relevantes del producto
+                    relevant_attrs = []
+                    for attr in attrs.split(','):
+                        if any(key in attr.lower() for key in ['color', 'voltale', 'corriente', 'material', 'linea']):
+                            relevant_attrs.append(attr.split('=')[1])
+                    if relevant_attrs:
+                        relevant_text += ' '.join(relevant_attrs)
+                
+                texts.append(relevant_text.strip())
             
             # Generar embeddings para los textos filtrados
             filtered_embeddings = self.model.encode(texts, show_progress_bar=False)
             faiss.normalize_L2(filtered_embeddings)
-            logger.debug(f"Embeddings generados: {filtered_embeddings.shape}")
-            
-            # Verificar la correspondencia entre embeddings y DataFrame
-            if len(filtered_embeddings) != len(filtered_df):
-                logger.error("Mismatch entre el número de embeddings y el DataFrame filtrado.")
-                logger.error(f"Embeddings: {len(filtered_embeddings)}, DataFrame: {len(filtered_df)}")
-                return []
             
             # Crear índice temporal de FAISS
             temp_index = faiss.IndexFlatIP(filtered_embeddings.shape[1])
             temp_index.add(filtered_embeddings)
-            logger.info(f"FAISS índice temporal creado con dimensión: {filtered_embeddings.shape[1]}")
-            
-            logger.info(f"Realizando búsqueda FAISS con top_k={top_k}")
             
             results = []
             if len(filtered_embeddings) > 0:
                 k = min(top_k, len(filtered_df))
                 if k == 0:
-                    logger.warning("top_k es 0, no se realizan búsquedas.")
                     return []
                 
                 # Realizar búsqueda
                 D, I = temp_index.search(query_embedding, k)
-                logger.info(f"FAISS search completed. Distancias: {D}, Índices: {I}")
                 
-                # Verificar y procesar los resultados
+                # Procesar resultados
                 if len(D) > 0 and len(D[0]) > 0:
                     for distance, idx in zip(D[0], I[0]):
-                        logger.debug(f"Procesando índice: {idx} con distancia: {distance}")
-                        
-                        # Verificar que el índice está dentro del rango
                         if 0 <= idx < len(filtered_df):
                             try:
-                                product = filtered_df.iloc[idx].to_dict()
-                                price = pd.to_numeric(product['price'], errors='coerce')
-                                if pd.notna(price) and price > 0:
-                                    results.append({
-                                        'product': product,
-                                        'score': float(distance),
-                                        'query': query
-                                    })
-                                    logger.debug(f"Producto añadido: {product['name']}, Precio: {price}")
-                                else:
-                                    logger.warning(f"Producto con índice {idx} tiene un precio inválido: {price}")
+                                product = filtered_df.iloc[idx]
+                                # Crear una versión limpia del producto para el resultado
+                                clean_product = {
+                                    'name': product['name'],
+                                    'price': float(product['price']),
+                                    'categories': product['categories'].split(',')[0],
+                                    'short_description': product.get('short_description', ''),
+                                    'sku': product.get('sku', '')
+                                }
+                                
+                                # Agregar atributos relevantes
+                                if pd.notna(product.get('additional_attributes')):
+                                    attrs = dict(item.split('=') for item in product['additional_attributes'].split(',')
+                                               if '=' in item and any(key in item.lower() 
+                                               for key in ['color', 'voltale', 'corriente', 'material', 'linea']))
+                                    clean_product['attributes'] = attrs
+                                
+                                results.append({
+                                    'product': clean_product,
+                                    'score': float(distance),
+                                    'query': query
+                                })
                             except Exception as e:
-                                logger.error(f"Error procesando producto con índice {idx}: {e}")
+                                logger.error(f"Error procesando producto {idx}: {e}")
                                 continue
-                        else:
-                            logger.error(f"Índice FAISS {idx} está fuera de los límites del DataFrame filtrado (0 - {len(filtered_df)-1})")
             
-            logger.info(f"Número de productos encontrados: {len(results)}")
+            logger.info(f"Búsqueda completada. Productos encontrados: {len(results)}")
             return results
-                
+                    
         except Exception as e:
             logger.error(f"Error en búsqueda de productos: {e}")
             return []
