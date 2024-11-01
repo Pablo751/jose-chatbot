@@ -69,14 +69,14 @@ def search_products(df: pd.DataFrame, search_terms: List[str], threshold: float 
     matches = []
     
     # Campos relevantes para la búsqueda
-    search_fields = ['name', 'description', 'short_description', 'meta_keywords', 'additional_attributes']
+    search_fields = ['name', 'description', 'short_description', 'additional_attributes']
     
     for _, row in df.iterrows():
         score = 0
         max_score = len(search_terms)
         
         # Combinar todos los campos de texto relevantes
-        text_to_search = ' '.join(str(row[field]).lower() for field in search_fields)
+        text_to_search = ' '.join(str(row[field]).lower() for field in search_fields if field in df.columns)
         
         # Calcular coincidencias
         for term in search_terms:
@@ -95,6 +95,7 @@ def search_products(df: pd.DataFrame, search_terms: List[str], threshold: float 
     # Ordenar por puntuación
     matches.sort(key=lambda x: x['score'], reverse=True)
     return matches[:5]  # Retornar los 5 mejores resultados
+
 
 def generate_product_response(product_info: Dict[str, str], user_question: str) -> str:
     """
