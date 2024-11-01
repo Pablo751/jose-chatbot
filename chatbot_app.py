@@ -15,7 +15,7 @@ import time
 from nltk.stem import SnowballStemmer
 from nltk.corpus import stopwords
 import nltk
-import openai
+from openai import OpenAI
 import os
 
 # -------------------------------
@@ -43,15 +43,15 @@ st.title("💬 Asistente de Productos")
 # -------------------------------
 # 2. Configurar el Cliente de OpenAI
 # -------------------------------
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
     """
     Llama a la API de OpenAI GPT-4o para generar una respuesta basada en el prompt.
     """
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-2024-08-06",  # Asegúrate de usar la versión correcta
+        response = client.chat.completions.create(
+            model="gpt-4",  # Update to the correct model name
             messages=[
                 {"role": "system", "content": """
                 Eres un asistente de ventas que ayuda a los clientes a encontrar productos en nuestra tienda.
@@ -62,12 +62,25 @@ def call_gpt4o(prompt: str, max_tokens: int = 500) -> str:
             temperature=0.3,  # Baja temperatura para respuestas más precisas
             max_tokens=max_tokens,
             n=1,
-            stop=None,
         )
         return response.choices[0].message.content.strip()
-    except openai.error.OpenAIError as e:
+    except Exception as e:
         logger.error(f"Error al llamar a GPT-4o: {e}")
         return "Lo siento, ocurrió un error al generar la respuesta. Por favor, inténtalo de nuevo más tarde."
+
+# Update the error handling in your code to use the new OpenAI exceptions
+def handle_api_errors(func):
+    """
+    Decorator para manejar errores de la API de OpenAI
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error en la API de OpenAI: {e}")
+            st.error("Ocurrió un error al procesar tu solicitud. Por favor, inténtalo de nuevo más tarde.")
+            return None
+    return wrapper
 
 # -------------------------------
 # 3. Cargar y Preprocesar Datos
